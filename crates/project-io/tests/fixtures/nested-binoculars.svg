@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+     width="112" height="70" viewBox="0 0 112 70">
+  <g id="wrapper" transform="translate(3 2)">
+    <g id="housing" inkscape:label="Housing" fill="#304154">
+      <path id="body" d="M16 42L25 12Q28 7 37 9L46 14H60L69 9Q78 7 81 13L92 43L80 54H30Z"/>
+      <g id="left" inkscape:label="Left lens" transform="rotate(-9 32 42)">
+        <ellipse id="left-rim" cx="32" cy="42" rx="21" ry="19" fill="#182937"/>
+        <ellipse id="left-glass" cx="32" cy="42" rx="16" ry="14" fill="#429894"/>
+        <path id="left-glint" d="M20 42Q21 31 34 30Q27 32 24 41Z" fill="#c4eee1"/>
+      </g>
+      <rect id="bridge" x="38" y="29" width="32" height="12" fill="#ad724e"/>
+      <g id="right" inkscape:label="Right lens" transform="translate(74 42)">
+        <ellipse id="right-rim" cx="0" cy="0" rx="21" ry="19" fill="#152734"/>
+        <ellipse id="right-glass" cx="0" cy="0" rx="16" ry="14" fill="#418b8b"/>
+        <g id="reflections" inkscape:label="Reflections" transform="rotate(8)">
+          <path id="right-glint" d="M-12 1Q-10 -11 3 -12Q-4 -9 -7 0Z" fill="#c4eee1"/>
+          <circle id="flare" cx="6" cy="-6" r="2"
+                  style="font-variation-settings:normal;fill:#e7fff0;stroke:none;-inkscape-stroke:none;stop-color:#000000;stop-opacity:1"/>
+        </g>
+      </g>
+      <path id="focus" d="M48 18H58L59 34H47Z" fill="#e4b981" fill-opacity=".85"/>
+    </g>
+  </g>
+</svg>

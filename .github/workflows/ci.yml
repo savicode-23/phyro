@@ -1,0 +1,50 @@
+name: Desktop checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  format:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup component add rustfmt --toolchain stable
+      - run: cargo +stable fmt --all --check
+
+  desktop:
+    name: Build and test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup component add clippy --toolchain stable
+      - name: Install Linux desktop dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgl1-mesa-dri libegl-dev libgl-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-0 libx11-dev xvfb xauth xdotool xclip python3-pil
+      - run: cargo +stable clippy --locked --workspace --all-targets
+      - run: cargo +stable test --locked --workspace
+      - run: cargo +stable build --locked --workspace
+      - name: Review a live edit through the stdio MCP client
+        shell: bash
+        run: |
+          export PHYRO_TEST_MCP_CLI="$PWD/target/debug/phyro-cli"
+          if [[ "$RUNNER_OS" == Windows ]]; then PHYRO_TEST_MCP_CLI="$(cygpath -w "$PHYRO_TEST_MCP_CLI.exe")"; fi
+          cargo +stable test --locked -p phyro stdio_artist_reviews -- --ignored
+      - name: Open, paste an image, save and export under X11
+        if: runner.os == 'Linux'
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: xvfb-run -a -s '-screen 0 1440x900x24' /usr/bin/python3 scripts/test_clipboard_x11.py

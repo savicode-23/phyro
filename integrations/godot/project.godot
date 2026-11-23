@@ -1,0 +1,20 @@
+config_version=5
+
+[application]
+config/name="Phyro - Lantern swing"
+run/main_scene="res://keeper.tscn"
+
+[editor_plugins]
+enabled=PackedStringArray("res://addons/phyro/plugin.cfg")
+
+[display]
+window/size/viewport_width=384
+window/size/viewport_height=288
+window/size/window_width_override=768
+window/size/window_height_override=576
+window/stretch/mode="canvas_items"
+
+[rendering]
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
+environment/defaults/default_clear_color=Color(0.09, 0.12, 0.15, 1)

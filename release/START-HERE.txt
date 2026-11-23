@@ -1,0 +1,35 @@
+Getting started with Phyro
+
+Extract the whole archive. On Windows, open phyro.exe in the extracted
+folder. On Ubuntu, open a terminal in the extracted folder and run ./phyro.
+The Linux desktop build uses OpenGL and a desktop portal for file dialogs.
+X11 sessions also need libxkbcommon-x11-0.
+
+Open docs/getting-started.md for a walkthrough from a blank drawing to a
+sprite sheet. Read it in any text editor or Markdown viewer. The docs folder
+also includes the editor guide and command-line reference.
+
+Drop lantern-walk.vanim onto the editor to try the animated character. Press
+Space to play and pause, or use comma and period to step through the frames.
+Use File > Save as to save your own copy. Drop draw-sparks-over-motion.vanim
+onto the editor for an example of frame-by-frame effects over a moving clip.
+
+Press S to select artwork, B to draw a path, or N to edit its nodes. Choose
+Edit > Keyboard shortcuts to see or change the bindings. Rename an object
+or group in Layers by double-clicking its name. Choose Export >
+Batch selected objects > SVG to save each selected object or group
+using that name.
+
+For scripting, run .\phyro-cli.exe --help in PowerShell or
+./phyro-cli --help on Linux. The included agent-workflow.py example edits
+the sleeve in lantern-walk.vanim and exports a preview and sprite sheet.
+
+On Windows, from this folder with Python installed, run
+  python agent-workflow.py lantern-walk.vanim walk-output --cli .\phyro-cli.exe
+On Linux, run
+  python3 agent-workflow.py lantern-walk.vanim walk-output --cli ./phyro-cli
+
+After an interrupted session you can reopen a draft at startup or under
+File > Recover drafts. Use File > Save as to keep the recovered copy.
+Help > Recent issues shows errors from this session. Help > Crash reports
+lets you copy a crash report.

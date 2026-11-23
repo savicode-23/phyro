@@ -1,0 +1,26 @@
+{
+  "format_version": 3,
+  "name": "Lantern keeper",
+  "images": ["sheet.png", "sheet-2.png"],
+  "animations": [
+    {
+      "name": "Idle",
+      "fps": 6,
+      "looping": true,
+      "events": [{"frame": 2, "name": "glow"}],
+      "frames": [
+        {"index": 0, "page": 1, "x": 2, "y": 2, "w": 99, "h": 95, "rotated": true, "source_w": 128, "source_h": 128, "trim_x": 14, "trim_y": 15, "duration_ticks": 4, "pivot": [56, 114]}
+      ]
+    },
+    {
+      "name": "Wave",
+      "fps": 18,
+      "looping": false,
+      "events": [{"frame": 0, "name": "lift"}],
+      "frames": [
+        {"index": 0, "page": 0, "x": 2, "y": 2, "w": 101, "h": 101, "duration_ticks": 1, "pivot": [18, 19]},
+        {"index": 1, "page": 1, "x": 2, "y": 2, "w": 99, "h": 95, "rotated": true, "source_w": 128, "source_h": 128, "trim_x": 14, "trim_y": 15, "duration_ticks": 3, "pivot": [20, 22]}
+      ]
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+[package]
+name = "phyro-cli"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+phyro-automation.workspace = true
+rmcp = { version = "=3.11.0", default-features = false, features = ["server", "transport-io"] }
+tokio.workspace = true
+document-core.workspace = true
+project-io.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "=0.10.9"
+
+[dev-dependencies]
+renderer.workspace = true
+tempfile.workspace = true
+tiny-skia.workspace = true

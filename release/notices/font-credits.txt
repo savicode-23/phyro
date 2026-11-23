@@ -1,0 +1,13 @@
+Phyro includes the default epaint fonts. The files beside this notice
+contain the license texts distributed with those fonts.
+
+emoji-icon-font.ttf — Copyright (c) 2014 John Slegers.
+See emoji-icon-font-mit-license.txt.
+
+Hack-Regular.ttf — Copyright (c) 2018 Source Foundry Authors and
+Copyright (c) 2003 Bitstream, Inc. See Hack-Regular.txt for the MIT
+and Bitstream Vera terms and DejaVu attribution.
+
+NotoEmoji-Regular.ttf — Copyright 2013 Google Inc. See OFL.txt.
+
+Ubuntu-Light.ttf — Copyright 2011 Canonical Ltd. See UFL.txt.

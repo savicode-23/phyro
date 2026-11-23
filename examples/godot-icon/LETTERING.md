@@ -1,0 +1,7 @@
+# Edit lettering on the Godot icon
+
+1. Open `edited.vanim` from this folder. Use **File → Save as…** to make a working copy named `lettering.vanim`.
+2. Press **T**, click the artboard and type `08`. In **Properties**, choose **Hack Regular** at **24 px**. Press **Ctrl+Enter** to finish, then use **Select** to move the lettering across the blue face and the darker background. The background should show through all three holes in the digits.
+3. With the lettering selected, open the **Fill** menu in **Properties → Appearance**, choose **Linear**, and click the gradient preview to give its two stops different colors. Save and reopen `lettering.vanim`. Select the lettering and click **Edit text** in **Properties**. Check the text, typeface and size, then close the dialog with **Cancel** and check the gradient on the canvas.
+4. In **Properties**, choose **Convert to path**. Press **N**, zoom in and drag an anchor on the inside edge of the zero. Undo once to restore the original contour, then undo again to restore editable text. Redo twice to bring back the edited outline.
+5. Save the result as `outlined.vanim` and choose **Export → Artboard → SVG…**. Use **File → Import SVG as project…** to reopen the SVG. Select the lettering with the Nodes tool and check the altered zero, both holes in the eight and both gradient stops. Clicking inside a hole with the Select tool should select the underlying icon artwork.

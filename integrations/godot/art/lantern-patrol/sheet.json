@@ -1,0 +1,251 @@
+{
+  "coordinates": "top-left pixels",
+  "events": [
+    {
+      "frame": 0,
+      "name": "light_on"
+    },
+    {
+      "frame": 2,
+      "name": "swing_left"
+    },
+    {
+      "frame": 2,
+      "name": "bell"
+    },
+    {
+      "frame": 7,
+      "name": "swing_right"
+    }
+  ],
+  "format_version": 2,
+  "fps": 12,
+  "frames": [
+    {
+      "duration_ticks": 1,
+      "h": 101,
+      "index": 0,
+      "page": 0,
+      "pivot": [
+        56.0,
+        114.0
+      ],
+      "rotated": false,
+      "source_h": 128,
+      "source_w": 128,
+      "trim_x": 13,
+      "trim_y": 13,
+      "w": 101,
+      "x": 2,
+      "y": 2
+    },
+    {
+      "duration_ticks": 1,
+      "h": 101,
+      "index": 1,
+      "page": 0,
+      "pivot": [
+        56.0,
+        114.0
+      ],
+      "rotated": false,
+      "source_h": 128,
+      "source_w": 128,
+      "trim_x": 13,
+      "trim_y": 13,
+      "w": 101,
+      "x": 106,
+      "y": 2
+    },
+    {
+      "duration_ticks": 1,
+      "h": 100,
+      "index": 2,
+      "page": 0,
+      "pivot": [
+        56.0,
+        114.0
+      ],
+      "rotated": false,
+      "source_h": 128,
+      "source_w": 128,
+      "trim_x": 13,
+      "trim_y": 14,
+      "w": 104,
+      "x": 2,
+      "y": 106
+    },
+    {
+      "duration_ticks": 1,
+      "h": 99,
+      "index": 3,
+      "page": 0,
+      "pivot": [
+        56.0,
+        114.0
+      ],
+      "rotated": false,
+      "source_h": 128,
+      "source_w": 128,
+      "trim_x": 14,
+      "trim_y": 15,
+      "w": 101,
+      "x": 109,
+      "y": 106
+    },
+    {
+      "duration_ticks": 1,
+      "h": 95,
+      "index": 4,
+      "page": 1,
+      "pivot": [
+        56.0,
+        114.0
+      ],
+      "rotated": true,
+      "source_h": 128,
+      "source_w": 128,
+      "trim_x": 14,
+      "trim_y": 15,
+      "w": 99,
+      "x": 2,
+      "y": 2
+    },
+    {
+      "duration_ticks": 1,
+      "h": 95,
+      "index": 5,
+      "page": 1,
+      "pivot": [
+        56.0,
+        114.0
+      ],
+      "rotated": true,
+      "source_h": 128,
+      "source_w": 128,
+      "trim_x": 14,
+      "trim_y": 15,
+      "w": 99,
+      "x": 104,
+      "y": 2
+    },
+    {
+      "duration_ticks": 1,
+      "h": 91,
+      "index": 6,
+      "page": 2,
+      "pivot": [
+        56.0,
+        114.0
+      ],
+      "rotated": true,
+      "source_h": 128,
+      "source_w": 128,
+      "trim_x": 14,
+      "trim_y": 13,
+      "w": 101,
+      "x": 108,
+      "y": 2
+    },
+    {
+      "duration_ticks": 1,
+      "h": 89,
+      "index": 7,
+      "page": 2,
+      "pivot": [
+        56.0,
+        114.0
+      ],
+      "rotated": true,
+      "source_h": 128,
+      "source_w": 128,
+      "trim_x": 14,
+      "trim_y": 12,
+      "w": 102,
+      "x": 2,
+      "y": 96
+    },
+    {
+      "duration_ticks": 1,
+      "h": 89,
+      "index": 8,
+      "page": 2,
+      "pivot": [
+        56.0,
+        114.0
+      ],
+      "rotated": true,
+      "source_h": 128,
+      "source_w": 128,
+      "trim_x": 14,
+      "trim_y": 12,
+      "w": 102,
+      "x": 107,
+      "y": 96
+    },
+    {
+      "duration_ticks": 1,
+      "h": 91,
+      "index": 9,
+      "page": 2,
+      "pivot": [
+        56.0,
+        114.0
+      ],
+      "rotated": true,
+      "source_h": 128,
+      "source_w": 128,
+      "trim_x": 14,
+      "trim_y": 11,
+      "w": 103,
+      "x": 2,
+      "y": 2
+    },
+    {
+      "duration_ticks": 1,
+      "h": 92,
+      "index": 10,
+      "page": 1,
+      "pivot": [
+        56.0,
+        114.0
+      ],
+      "rotated": true,
+      "source_h": 128,
+      "source_w": 128,
+      "trim_x": 14,
+      "trim_y": 12,
+      "w": 102,
+      "x": 2,
+      "y": 100
+    },
+    {
+      "duration_ticks": 1,
+      "h": 92,
+      "index": 11,
+      "page": 1,
+      "pivot": [
+        56.0,
+        114.0
+      ],
+      "rotated": true,
+      "source_h": 128,
+      "source_w": 128,
+      "trim_x": 14,
+      "trim_y": 12,
+      "w": 102,
+      "x": 107,
+      "y": 100
+    }
+  ],
+  "image": "sheet.png",
+  "images": [
+    "sheet.png",
+    "sheet-2.png",
+    "sheet-3.png"
+  ],
+  "layout": "packed",
+  "looping": true,
+  "name": "Lantern patrol",
+  "scale": 1
+}

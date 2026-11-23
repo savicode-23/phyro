@@ -1,0 +1,16 @@
+[package]
+name = "project-io"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+document-core.workspace = true
+renderer.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+zip.workspace = true
+xml-rs = "=0.8.29"
+tiny-skia.workspace = true
+fontdb = { version = "=0.23.0", default-features = false, features = ["fs"] }

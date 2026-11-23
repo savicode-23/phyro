@@ -1,0 +1,9 @@
+[package]
+name = "renderer"
+version.workspace = true
+edition = "2021"
+publish = false
+
+[dependencies]
+document-core.workspace = true
+tiny-skia.workspace = true

@@ -1,0 +1,37 @@
+[package]
+name = "phyro"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[build-dependencies]
+find-msvc-tools = "0.1.15"
+
+[dependencies]
+phyro-automation.workspace = true
+tokio.workspace = true
+base64 = "0.22"
+arboard = { version = "=3.7.0", default-features = false, features = ["image-data"] }
+document-core.workspace = true
+eframe.workspace = true
+project-io.workspace = true
+renderer.workspace = true
+rfd.workspace = true
+serde_json.workspace = true
+serde = { workspace = true, features = ["derive"] }
+tempfile.workspace = true
+tiny-skia.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = [
+    "Wdk_System_SystemServices",
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_EventLog",
+    "Win32_System_LibraryLoader",
+    "Win32_System_ProcessStatus",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+    "Win32_UI_Input_KeyboardAndMouse",
+] }

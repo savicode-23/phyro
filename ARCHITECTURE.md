@@ -1,0 +1,59 @@
+# Phyro architecture
+
+## Workspace map
+
+| Cargo package | Owns | Start here |
+| --- | --- | --- |
+| `document-core` | Authored drawings, animation, geometry queries and edit rules | [Model](crates/document-core/src/lib.rs), [animation](crates/document-core/src/animation.rs) |
+| `renderer` | CPU rasterization, bounds, selection surfaces and drag previews | [Render entry points](crates/renderer/src/lib.rs) |
+| `project-io` | Native archives, SVG interchange, image import and sprite export | [I/O entry points](crates/project-io/src/lib.rs) |
+| `phyro` | Native egui/eframe editor, tools, timeline, history and file dialogs | [Startup](crates/editor-app/src/main.rs), [editor](crates/editor-app/src/editor.rs) |
+| `phyro-cli` | JSON command discovery, archive revisions, headless export and the stdio MCP server | [Commands](crates/phyro-cli/src/command.rs), [MCP server](crates/phyro-cli/src/mcp.rs) |
+| `phyro-automation` | Shared inspection and edit operations, plus local pairing transport | [Edit batches](crates/phyro-automation/src/edit.rs), [inspection](crates/phyro-automation/src/inspect.rs), [transport](crates/phyro-automation/src/ipc.rs) |
+
+The renderer depends on the model. Project I/O uses both. The desktop editor calls all three. The CLI uses the model and project I/O directly, so preview and export can run without a window. The Godot add-on consumes exported atlas metadata downstream. [Workspace manifest](Cargo.toml) · [Godot importer](integrations/godot/addons/phyro/atlas_importer.gd)
+
+## From authored drawings to a pose
+
+- An `AnimationProject` owns clips, animation sets, symbol definitions and export settings. All clips share the artboard dimensions. Each clip has its own FPS, duration, origin and events. A placement refers to a persistent clip ID, so moving the source between sets preserves the link. Object IDs belong to a drawing. Internal ticks start at zero and the editor labels the first frame **1**. [Clips and sets](crates/document-core/src/animation.rs)
+- A clip’s `cels` map stores an `Arc<Document>` at each drawing boundary. The last boundary at or before a tick supplies the composite drawing. At a boundary, `layer_starts` identifies the layers beginning a new drawing. An absent entry starts all layers and the rig, preserving older whole-drawing clips. A held drawing can still animate through object keys, bones or nested clips. [Layer exposures](crates/document-core/src/animation/layer_exposures.rs)
+- A `Document` owns layers, objects, guides and a skeleton. Coordinates are in pixels from the top left. Layer order and object order within a layer determine paint order. The model samples property keys and easing, path geometry, transforms about the authored pivot, and rig bindings at the requested tick. Picking and rendering use that evaluated geometry. Guided morphs store correspondences between two authored outlines and derive intermediate curves on demand. [Geometry](crates/document-core/src/geometry.rs) · [Property tracks](crates/document-core/src/tracks.rs) · [Morph evaluation](crates/document-core/src/guided_geometry.rs)
+- The composition resolver checks symbol and clip references for cycles and rebuilds runtime links. Symbols display their definition at tick zero. Nested playback converts parent ticks using both clips’ FPS, the placement’s rate, offset and loop mode. Explicit drawing keys override that calculation and hold the chosen child frame. Placing a library clip copies the clip and its transitive dependencies into the destination project and remaps IDs. The source file can then move independently. [Composition and timing](crates/document-core/src/composition.rs) · [External placement](crates/document-core/src/composition/import.rs)
+
+## Desktop edit and display
+
+The active tab’s project, saved snapshot, gesture baseline, history, selection, canvas and timeline live in `Editor`. Switching tabs exchanges these with a stored document. Preferences such as shortcuts and panel layout belong to the workspace. An edit to a held layer propagates through its exposure, resolves references and enters history. Single-drawing edits can store object differences. Structural transactions share unchanged drawings through `Arc`. Draft recovery writes committed snapshots separately from explicit project saves. [Tab ownership](crates/editor-app/src/editor/documents.rs) · [Transactions](crates/editor-app/src/commands.rs) · [Draft lifecycle](crates/editor-app/src/editor/drafts.rs)
+
+The canvas and PNG exporter share tiny-skia’s premultiplied RGBA rendering. The editor uses OpenGL to display textures and egui to paint controls. During a gesture it can reuse textures, redraw a changed region or move a cached selection. A worker refines the settled view. Export rasterizes at the requested output size and excludes reference-only artwork. Timeline painting uses visible rows and ticks, drawing-start markers and tween spans. Asset thumbnails are requested by the folder browser on its own worker. [Canvas raster cache](crates/editor-app/src/canvas/raster.rs) · [Timeline ruler](crates/editor-app/src/timeline/ruler.rs) · [Folder worker](crates/editor-app/src/library/folders/backend.rs)
+
+The desktop editor keeps recent issues at window scope so a file operation can fail while a different tab is active. Operation failures carry a short title and copyable details. Repeated canvas and timeline conditions report when they change. Export workers return a typed completion, and destination errors stay inside the export dialog when it can accept a retry. [Issue UI](crates/editor-app/src/editor/notices.rs) · [Export completion](crates/editor-app/src/exports.rs)
+
+Move, draw and Pen previews share their constrained targets with commit. The Pen's 15° angle constraint takes priority over magnetic snapping for anchors. Ctrl-click changes a node's style through the geometry edit rules on release, once the drag threshold has distinguished a click from a handle pull. A flip during a move applies to the same staged drawing as the translation. Artwork locks are authored on individual drawing members, with group locking applied to every member on its layer. The canvas and Layers use the lock to gate selection while the renderer still draws locked paths.
+
+Stroke to Path uses the same stroke outline as picking and rendering. It converts the result to editable cubic contours in the source object's local space and inserts the outline directly above any retained fill. It preserves linear gradients by remapping the gradient into the new geometry's paint bounds.
+
+Document Properties edits a single artboard grid shared by all clips through ordinary project history. Projects store grid visibility. Editor tabs store snap target toggles. The overlay and snap resolver use the same vertical spacing and diagonal slopes. The overlay clips to the visible artboard and skips grids whose lines are too dense at the current zoom. [Grid geometry](crates/document-core/src/grid.rs) · [Grid controls](crates/editor-app/src/editor/document_properties.rs)
+
+## Files and external tools
+
+New artwork uses Miter joins by default. Native drawings that omitted the join still decode as Round, the original default.
+
+- **Native save/open.** A `.vanim` ZIP contains `manifest.json` and `document.json`. The writer chooses an archive version from the features used, currently up to 27 for a configured document grid. The model’s `FORMAT_VERSION = 2` describes the base drawing schema. The manifest still writes the historical `Loopline` identifier for compatibility. Load migrates older data, resolves references and validates the project. Save validates a resolved snapshot and publishes a synced temporary file from the destination directory. [Archive codec](crates/project-io/src/project.rs) · [Embedded resource tables](crates/project-io/src/project/embedded.rs)
+- **Export.** SVG exchanges supported editable artwork at one tick. PNG sequences and sheets sample a clip or set. Animated selection export follows IDs within a layer exposure and uses unique layer/object names across independent drawings. It measures a common crop across the range so the sprite keeps its position. The editor runs export jobs on workers and the CLI invokes the same I/O operations. [SVG](crates/project-io/src/svg/mod.rs) · [Selection matching](crates/project-io/src/sprites/selection/animation/matching.rs) · [Sprite outputs](crates/project-io/src/sprites.rs)
+- **CLI edits.** A batch names the revision of the input archive. Each operation supplies its own clip ID and exposure start, so one batch can edit several clips. The CLI checks the revision, applies operations to an isolated project, validates it and writes a new file after the whole batch succeeds. [CLI protocol and examples](docs/command-line.md)
+
+## Live assistant sharing
+
+The CLI and editor share inspection, operation discovery and atomic validation in `phyro-automation`. The CLI alone owns archive revision checks and output destinations. In stdio mode the official Rust MCP SDK owns the protocol. A client-initiated pairing listener uses a private Unix runtime directory or a local Windows pipe with a DACL for the process user's SID. The editor opens an outbound connection only after the artist shares a particular tab.
+
+Each open document has a runtime identity and its history counts successful transactions, undo and redo. The UI thread authorizes requests against the active shared tab and supplies committed, copy-on-write snapshots through a bounded queue. Workers inspect, render and validate those snapshots. The review pins its before and after projects, hold ranges and revision. The editor publishes a batch when the artist chooses **Apply**, using normal history and draft recovery. [Editor implementation](crates/editor-app/src/editor/assistant.rs) · [Shared engine](crates/phyro-automation/src/lib.rs)
+
+Live drafts occupy the same review slot as batches. The editor retains the committed base, latest validated project and ordered step log. The preview worker replays the log for an earlier selection. One render runs at a time and the next render targets the current selection or latest step. Each displayed texture pair carries its project snapshot, tab, revision, proposal, step and sampled clip/tick. Keep checks the displayed identity and publishes its snapshot through the same history transaction as Apply. Closing the draft drops its private result receiver. [Draft review](crates/editor-app/src/editor/assistant/draft.rs)
+
+## Technical debt to keep in view
+
+| Area | Consequence for the next change |
+| --- | --- |
+| Composite drawings | Fast playhead lookup trades off against edit cost. Changing one held layer can update several composite drawings. Measure commit and undo with many exposure boundaries. See `Clip::sync_layer_edits` in [layer exposures](crates/document-core/src/animation/layer_exposures.rs). |
+| Per-tab state | `StoredDocument::swap` explicitly lists the fields exchanged with `Editor`. A new tab-local field missed there can carry state into another project. Exercise tab switching, undo and recovery when changing ownership. [Tab state](crates/editor-app/src/editor/documents.rs) |
+| Format evolution | Archive feature detection, resource packing and legacy decoding are maintained separately. A new persisted field can be lost or assigned an incompatible version if only its serde definition changes. Cover older inputs and mixed-feature save/reopen cases. [Archive codec](crates/project-io/src/project.rs) · [I/O regression tests](crates/project-io/tests) |

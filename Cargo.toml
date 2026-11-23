@@ -1,0 +1,30 @@
+[workspace]
+members = ["crates/document-core", "crates/renderer", "crates/project-io", "crates/editor-app", "crates/phyro-cli", "crates/phyro-automation"]
+default-members = ["crates/editor-app"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0-alpha.2"
+edition = "2021"
+publish = false
+
+[workspace.dependencies]
+phyro-automation = { path = "crates/phyro-automation" }
+tokio = { version = "1", features = ["rt", "net", "io-util", "time", "sync", "macros"] }
+document-core = { path = "crates/document-core" }
+renderer = { path = "crates/renderer" }
+project-io = { path = "crates/project-io" }
+eframe = { version = "=0.31.1", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
+rfd = "=0.15.3"
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.145"
+tempfile = "=3.23.0"
+tiny-skia = "=0.11.4"
+zip = { version = "=4.6.1", default-features = false }
+
+# Keep source lines for our release binaries and their matching offline symbols.
+[profile.release]
+debug = "line-tables-only"
+
+[profile.release.package."*"]
+debug = false

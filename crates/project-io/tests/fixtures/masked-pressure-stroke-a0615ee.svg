@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" width="160" height="112" viewBox="0 0 160 112">
+  <g inkscape:groupmode="layer" inkscape:label="Layer 1" data-loopline-locked="false">
+    <rect x="0" y="0" width="160" height="112" fill="#465dba" fill-opacity="0.23529412" stroke="#000000" stroke-width="0" stroke-linecap="round" stroke-linejoin="round"/>
+    <defs>
+    </defs>
+    <defs>
+      <linearGradient id="loopline-2-fade" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#ffffff" stop-opacity="0.8627451"/><stop offset="1" stop-color="#ffffff" stop-opacity="0.13725491"/></linearGradient>
+      <mask id="loopline-2-mask" maskUnits="userSpaceOnUse" maskContentUnits="userSpaceOnUse" x="28.219065" y="17.720297" width="92.43725" height="66.00378">
+    <path d="M 0.5 0.000000071822996 C 0.77614236 0.000000078571 1 0.2238577 1 0.50000006 C 1 0.7761424 0.77614236 1 0.5 1 C 0.22385761 1 -0.000000004200405 0.7761424 -0.0000000027059501 0.50000006 C -0.000000001211495 0.22385767 0.22385761 0.000000065074985 0.5 0.000000071822996 Z" transform="matrix(89.33362 37.919872 22.880629 -53.90339 18.330564 58.713943)" fill="url(#loopline-2-fade)"/></mask></defs>
+    <g data-loopline-ungrouped="true" opacity="0.78" mask="url(#loopline-2-mask)">
+    <path d="M 21.724998 29.84 L 64.114 32.7975 L 106.503 65.33 L 133.275 83.075" transform="matrix(0.92050487 0.39073113 0.39073113 -0.92050487 -14.743242 72.46535)" fill="#b51c8b" fill-opacity="0.6666667" stroke="none"/>
+    <defs>
+      <radialGradient id="loopline-2-stroke" cx="0.42521632" cy="0.45832345" r="0.507045">
+        <stop offset="0" stop-color="#0ec6be" stop-opacity="0.91764706"/>
+        <stop offset="0.5" stop-color="#c34e99" stop-opacity="0.7176471"/>
+        <stop offset="1" stop-color="#eea337" stop-opacity="0.42745098"/>
+      </radialGradient>
+    <clipPath id="loopline-2-pressure" clipPathUnits="objectBoundingBox"><path d="M 0.01980146 0.1791205 L 0.32024124 0.33827347 C 0.32711983 0.34191728 0.33419505 0.3436742 0.3412895 0.34350038 L 0.3430511 0.34345722 C 0.38565987 0.342413 0.4207534 0.2730204 0.42371923 0.18394728 C 0.4266851 0.09487438 0.39653018 0.015942521 0.35440347 0.0025099814 L 0.35266182 0.0019546375 C 0.34564757 -0.00028185546 0.3385245 -0.0006006807 0.3314711 0.0010062978 L 0.023394981 0.07119496 C 0.010774301 0.074070334 0.00094786286 0.09547238 0.000064259395 0.122009486 C -0.00081931986 0.14854659 0.007493578 0.17260061 0.01980146 0.1791205 Z M 0.29771674 0.31606168 L 0.59185326 0.7139387 C 0.5923522 0.7146137 0.5928565 0.7152711 0.5933661 0.7159108 L 0.6333364 0.7660928 C 0.6342851 0.7672839 0.6352533 0.7684059 0.6362391 0.7694567 L 0.848161 0.9953287 C 0.85743904 1.0052174 0.868781 0.99895966 0.87453175 0.98077905 C 0.8802827 0.96259844 0.8786151 0.9382718 0.8706546 0.92421824 L 0.69009405 0.60545367 L 0.65781486 0.53994703 C 0.65738827 0.5390812 0.65695477 0.5382304 0.65651447 0.53739494 L 0.39702126 0.04493189 C 0.37417465 0.001573734 0.34163818 -0.011201203 0.31285006 0.011883482 C 0.28406194 0.034968063 0.26390782 0.089994624 0.26071176 0.154236 C 0.25751567 0.21847737 0.27181995 0.2810312 0.29771674 0.31606168 Z "/></clipPath></defs>
+    <rect x="-0.03155613" y="-0.1513856" width="1.2030492" height="1.2030492" transform="matrix(102.68232 43.58606 20.800571 -49.00308 16.91414 53.486115)" clip-path="url(#loopline-2-pressure)" fill="url(#loopline-2-stroke)" stroke="none"/>
+    </g>
+  </g>
+</svg>
