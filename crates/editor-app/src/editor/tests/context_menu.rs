@@ -1,6 +1,116 @@
 use super::*;
 
 #[test]
+fn simplify_shortcut_and_path_menu_edit_the_hold_in_one_undo() {
+    let mut doc = Document::default();
+    let id = doc
+        .add_artboard_path(
+            [
+                [12., 30.],
+                [30., 30.3],
+                [50., 30.],
+                [70., 30.3],
+                [90., 30.],
+                [90., 70.],
+            ]
+            .map(document_core::PathNode::corner)
+            .to_vec(),
+            false,
+            1,
+            [255; 4],
+        )
+        .unwrap();
+    let mut before = AnimationProject::from_document(doc);
+    before.clips[0].duplicate_layer_frame(3, 1).unwrap();
+    let mut w = EditorWindow::new(egui::vec2(1100., 740.));
+    w.ctx.style_mut(|s| s.animation_time = 0.);
+    w.editor.replace_project(before.clone(), None);
+    w.editor.timeline.restore_playhead(0, 1);
+    w.board();
+
+    for via_menu in [false, true] {
+        w.editor.select_artwork(vec![id]);
+        if via_menu {
+            w.click("Path");
+            w.click("Simplify");
+        } else {
+            pen::chord(
+                &mut w,
+                Key::L,
+                egui::Modifiers::CTRL | egui::Modifiers::COMMAND,
+            );
+        }
+        assert_eq!(w.editor.selection, [id]);
+        let clip = &w.editor.project.clips[0];
+        let original = &before.clips[0].drawing_at(0).objects[0].shape.contours()[0];
+        for frame in [0, 1, 2] {
+            let simplified = &clip.drawing_at(frame).objects[0].shape.contours()[0];
+            assert!(simplified.len() < original.len());
+            assert!(
+                simplified
+                    .iter()
+                    .any(|node| node.point == original[4].point),
+                "sharp corner is preserved"
+            );
+        }
+        assert_eq!(clip.drawing_at(3), before.clips[0].drawing_at(3));
+        assert!(w.editor.can_undo());
+        w.click_edit("Undo");
+        assert_eq!(w.editor.project, before);
+        assert!(!w.editor.can_undo());
+    }
+}
+
+#[test]
+fn simplify_records_a_smoothing_only_edit_and_keeps_the_selected_node() {
+    let mut doc = Document::default();
+    let id = doc.add_shape(
+        [10., 10.],
+        [100., 100.],
+        [255; 4],
+        document_core::Shape::Path {
+            nodes: [[0., 0.4], [0.5, 0.6], [1., 0.4]]
+                .map(document_core::PathNode::corner)
+                .to_vec(),
+            closed: false,
+        },
+        1,
+    );
+    let mut before = AnimationProject::from_document(doc);
+    before.clips[0].duplicate_layer_frame(3, 1).unwrap();
+    let mut w = EditorWindow::new(egui::vec2(1100., 740.));
+    w.editor.replace_project(before.clone(), None);
+    w.editor.timeline.restore_playhead(0, 1);
+    w.editor.set_tool(Tool::Node);
+    w.editor.select_artwork(vec![id]);
+    w.board();
+    crate::path_editor::select(&w.ctx, id, 1, 0, 1);
+
+    pen::chord(
+        &mut w,
+        Key::L,
+        egui::Modifiers::CTRL | egui::Modifiers::COMMAND,
+    );
+
+    let original = &before.clips[0].drawing_at(0).objects[0].shape;
+    let clip = &w.editor.project.clips[0];
+    for frame in [0, 1, 2] {
+        let smoothed = &clip.drawing_at(frame).objects[0].shape;
+        assert_ne!(smoothed, original);
+        assert_eq!(smoothed.contours()[0].len(), 3);
+    }
+    assert_eq!(&clip.drawing_at(3).objects[0].shape, original);
+    assert_eq!(crate::path_editor::selected_range(&w.ctx, id, 1), (0, 1, 1));
+    assert_eq!(
+        w.editor.status,
+        "Smoothed selected paths and kept all anchors."
+    );
+    w.click_edit("Undo");
+    assert_eq!(w.editor.project, before);
+    assert!(!w.editor.can_undo());
+}
+
+#[test]
 fn right_click_targets_artwork_keeps_multiselections_and_reuses_edit_commands() {
     let mut doc = Document {
         width: 128,

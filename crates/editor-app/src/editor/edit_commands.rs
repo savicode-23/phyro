@@ -1,6 +1,7 @@
 use super::{commands, Clipboard, Editor, Tool};
 use crate::keymap::{self, Action, Keymap};
 use commands::GroupAction;
+use document_core::arrange::SelectionScope;
 use eframe::egui::{self, Context, Event, Key, KeyboardShortcut, Modifiers};
 mod clipboard;
 mod text_menu;
@@ -166,7 +167,10 @@ impl Editor {
                 .pen_history_available(true)
                 .unwrap_or_else(|| self.history.can_redo()),
             _ if self.canvas.path_in_progress() || self.canvas.rig.placing() => false,
-            Grouping(action) => action.enabled(self.scene(), &self.selection),
+            Grouping(action) => {
+                self.selection_scope() == SelectionScope::Groups
+                    && action.enabled(self.scene(), &self.selection)
+            }
             _ if self.timeline.is_playing() => false,
             Cut | Copy | Duplicate => !self.selection.is_empty(),
             Deselect => match self.timeline_target() {
@@ -189,18 +193,24 @@ impl Editor {
                 None => !self.selection.is_empty(),
             },
             Paste => commands::is_editable(self.scene(), self.style.layer),
-            PasteStyle => commands::has_style_target(self.scene(), &self.selection),
-            SelectAll => !self.scene().objects.is_empty(),
+            PasteStyle => {
+                commands::has_style_target_in(self.scene(), &self.selection, self.selection_scope())
+            }
+            SelectAll => self.scene().objects.iter().any(|o| {
+                self.style.group_scope().contains(o)
+                    && document_core::arrange::is_object_editable(self.scene(), o)
+            }),
         }
     }
 
     fn copy_selection(&mut self, ctx: &Context) -> bool {
         let mut copied = Clipboard::default();
-        copied.copy_project(
+        copied.copy_project_in(
             &self.project,
             self.timeline.clip,
             self.timeline.frame,
             &self.selection,
+            self.selection_scope(),
         );
         if copied.is_empty() {
             return false;
@@ -215,9 +225,11 @@ impl Editor {
     fn delete_selection(&mut self) {
         self.finish_edit();
         self.canvas.cancel_drag();
+        let scope = self.selection_scope();
         let drawing = self.project.clips[self.timeline.clip].drawing_at_mut(self.timeline.frame);
-        commands::delete(drawing, &self.selection);
+        commands::delete_in(drawing, &self.selection, scope);
         self.selection.clear();
+        self.canvas.direct_selection = None;
         self.timeline.leave_grid_selection();
         self.finish_edit();
     }
@@ -323,16 +335,19 @@ impl Editor {
             }
             SelectAll => {
                 let doc = self.scene();
+                let scope = self.style.group_scope();
                 let ids = doc
                     .objects
                     .iter()
-                    .filter(|o| document_core::arrange::is_object_editable(doc, o))
+                    .filter(|o| {
+                        scope.contains(o) && document_core::arrange::is_object_editable(doc, o)
+                    })
                     .map(|o| o.id)
                     .collect();
                 self.select_artwork(ids);
             }
             Deselect if self.timeline_target().is_some() => self.timeline.deselect_grid(),
-            Deselect => self.selection.clear(),
+            Deselect => self.select_artwork(Vec::new()),
         }
     }
 
@@ -370,12 +385,14 @@ impl Editor {
                         }
                         self.finish_edit();
                         let frame = self.timeline.frame;
+                        let scope = self.selection_scope();
                         let drawing = self.project.clips[self.timeline.clip].drawing_at_mut(frame);
-                        if self.clipboard.paste_style(
+                        if self.clipboard.paste_style_in(
                             drawing,
                             &self.selection,
                             frame,
                             self.style.key_mode,
+                            scope,
                         ) != 0
                         {
                             if let Some(object) = self.selection.iter().rev().find_map(|id| {

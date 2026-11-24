@@ -1,6 +1,6 @@
 use crate::timeline::KeyMode;
 use document_core::{
-    arrange::{plan_flip, Flip},
+    arrange::{plan_flip_in, Flip, SelectionScope},
     Document, KeyValue, Property, VectorObject,
 };
 
@@ -37,6 +37,7 @@ fn apply(o: &mut VectorObject, t: u32, flip: &Flip, mode: KeyMode) -> bool {
     true
 }
 
+#[cfg(test)]
 pub(crate) fn flip_selection(
     doc: &mut Document,
     ids: &[u64],
@@ -44,7 +45,18 @@ pub(crate) fn flip_selection(
     horizontal: bool,
     mode: KeyMode,
 ) -> bool {
-    let Ok(plan) = plan_flip(doc, ids, frame, horizontal) else {
+    flip_selection_in(doc, ids, frame, horizontal, mode, SelectionScope::Groups)
+}
+
+pub(crate) fn flip_selection_in(
+    doc: &mut Document,
+    ids: &[u64],
+    frame: u32,
+    horizontal: bool,
+    mode: KeyMode,
+    scope: SelectionScope,
+) -> bool {
+    let Ok(plan) = plan_flip_in(doc, ids, frame, horizontal, scope) else {
         return false;
     };
     let mut staged = Vec::new();

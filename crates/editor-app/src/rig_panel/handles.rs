@@ -34,7 +34,7 @@ impl RigPanel {
         &mut self,
         ui: &Ui,
         response: &egui::Response,
-        doc: &mut Document,
+        doc: &mut Arc<Document>,
         frame: u32,
         screen: impl Fn([f32; 2]) -> Pos2,
         world: impl Fn(Pos2) -> Pos2,
@@ -118,7 +118,9 @@ impl RigPanel {
             let target: [f32; 2] = (world(pos) + drag.offset).into();
             if pos.distance_sq(drag.press) >= 1. || drag.last.is_some() {
                 if released {
-                    self.error = doc.pose_bone_ik(drag.bone, frame, target, flip).err();
+                    self.error = Arc::make_mut(doc)
+                        .pose_bone_ik(drag.bone, frame, target, flip)
+                        .err();
                 } else if down && drag.last != Some((target, flip)) {
                     drag.last = Some((target, flip));
                     match doc.preview_posed_artwork(drag.bone, frame, target, flip) {

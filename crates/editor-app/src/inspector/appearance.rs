@@ -1,8 +1,9 @@
 use super::{commands, number};
 use document_core::{Document, Shape, Stencil, VectorObject};
 use eframe::egui::{self, Ui};
+use std::sync::Arc;
 
-pub(super) fn show(ui: &mut Ui, doc: &mut Document, selected: &mut Vec<u64>, frame: u32) {
+pub(super) fn show(ui: &mut Ui, doc: &mut Arc<Document>, selected: &mut Vec<u64>, frame: u32) {
     if selected.is_empty() {
         return;
     }
@@ -22,12 +23,12 @@ pub(super) fn show(ui: &mut Ui, doc: &mut Document, selected: &mut Vec<u64>, fra
     ui.collapsing("Clip and mask", |ui| {
         let status = ui.make_persistent_id(("clip-error", selected.as_slice()));
         if let Some(action) = clip_actions(ui, doc, selected, false) {
-            match action.apply(doc, selected, frame) {
+            match action.apply(Arc::make_mut(doc), selected, frame) {
                 Ok(()) => ui.data_mut(|d| d.remove::<String>(status)),
                 Err(message) => ui.data_mut(|d| d.insert_temp(status, message)),
             }
         } else if let Some(i) = single.filter(|&i| doc.objects[i].clip_source.is_none()) {
-            stencil(ui, &mut doc.objects[i].stencil);
+            stencil(ui, doc, i);
         } else {
             captured_alpha(ui, doc, selected);
         }
@@ -118,15 +119,15 @@ pub(super) fn pair(ui: &mut Ui, label: &str, values: &mut [f32; 2], minimum: Opt
         }
     });
 }
-fn stencil(ui: &mut Ui, slot: &mut Option<Stencil>) {
-    if slot.is_none() {
+fn stencil(ui: &mut Ui, doc: &mut Arc<Document>, index: usize) {
+    if doc.objects[index].stencil.is_none() {
         ui.horizontal_wrapped(|ui| {
             for (label, shape) in [
                 ("Rectangle clip", Shape::Rectangle),
                 ("Ellipse clip", Shape::Ellipse),
             ] {
                 if ui.button(label).clicked() {
-                    *slot = Some(Stencil {
+                    Arc::make_mut(doc).objects[index].stencil = Some(Stencil {
                         fill_rule: Default::default(),
                         shape,
                         origin: [0.1; 2],
@@ -137,25 +138,26 @@ fn stencil(ui: &mut Ui, slot: &mut Option<Stencil>) {
             }
         });
     }
-    let Some(s) = slot else {
+    let Some(s) = &doc.objects[index].stencil else {
         return;
     };
+    let (mut origin, mut size, mut alpha) = (s.origin, s.size, s.alpha);
     ui.horizontal_wrapped(|ui| {
-        if ui.selectable_label(s.alpha.is_none(), "Clip").clicked() {
-            s.alpha = None;
+        if ui.selectable_label(alpha.is_none(), "Clip").clicked() {
+            alpha = None;
         }
-        if ui
-            .selectable_label(s.alpha.is_some(), "Alpha mask")
-            .clicked()
-            && s.alpha.is_none()
-        {
-            s.alpha = Some([0, 255]);
+        if ui.selectable_label(alpha.is_some(), "Alpha mask").clicked() && alpha.is_none() {
+            alpha = Some([0, 255]);
         }
     });
-    pair(ui, "Offset", &mut s.origin, None);
-    pair(ui, "Size", &mut s.size, Some(0.001));
-    if let Some([left, right]) = &mut s.alpha {
+    pair(ui, "Offset", &mut origin, None);
+    pair(ui, "Size", &mut size, Some(0.001));
+    if let Some([left, right]) = &mut alpha {
         alpha_controls(ui, left, right);
+    }
+    if (origin, size, alpha) != (s.origin, s.size, s.alpha) {
+        let s = Arc::make_mut(doc).objects[index].stencil.as_mut().unwrap();
+        (s.origin, s.size, s.alpha) = (origin, size, alpha);
     }
 }
 
@@ -164,7 +166,7 @@ fn alpha_controls(ui: &mut Ui, left: &mut u8, right: &mut u8) {
     ui.add(egui::Slider::new(right, 0..=255).text("Right alpha"));
 }
 
-fn captured_alpha(ui: &mut Ui, doc: &mut Document, selected: &[u64]) {
+fn captured_alpha(ui: &mut Ui, doc: &mut Arc<Document>, selected: &[u64]) {
     let Some(first) = doc.objects.iter().find(|o| Some(&o.id) == selected.first()) else {
         return;
     };
@@ -195,7 +197,7 @@ fn captured_alpha(ui: &mut Ui, doc: &mut Document, selected: &[u64]) {
     let [mut left, mut right] = original;
     alpha_controls(ui, &mut left, &mut right);
     if [left, right] != original {
-        for object in doc
+        for object in Arc::make_mut(doc)
             .objects
             .iter_mut()
             .filter(|o| matches(o) && (group.is_some() || selected.contains(&o.id)))

@@ -5,6 +5,115 @@ fn view() -> Rect {
 }
 
 #[test]
+fn held_selection_upgrades_its_coarse_layers_once_after_first_movement() {
+    let mut doc = Document::default();
+    let first = doc.add_rectangle([0.; 2], [20.; 2], [255; 4]);
+    let second = doc.add_rectangle([20.; 2], [20.; 2], [255; 4]);
+    doc.add_rectangle([40.; 2], [20.; 2], [255; 4]);
+    let source = Arc::new(doc);
+    let ids = [first, second];
+    let mut posed = source.as_ref().clone();
+    for object in &mut posed.objects[..2] {
+        object.position[0] += 5.;
+    }
+    let ctx = egui::Context::default();
+    let mut cache = SelectionMove::default();
+    let area = View {
+        board: view(),
+        scale: 6.,
+    };
+    cache.prepare(&ctx, &source, &ids, 0, (6., view()), false);
+    let request = cache.request.as_ref().unwrap();
+    let exact = PreparedLayers::new(
+        capture(
+            &source,
+            &ids,
+            0,
+            6.,
+            request.visible,
+            renderer::MAX_SPRITE_EDGE,
+            &AtomicBool::new(false),
+        )
+        .unwrap(),
+    );
+    // Make the worker result available before first movement to cover the
+    // repaint where an affordable upgrade was already waiting in the queue.
+    let (send, receiver) = mpsc::channel();
+    send.send(Some(exact)).unwrap();
+    cache.job = Some(Job {
+        receiver,
+        ready: None,
+        cancel: Default::default(),
+    });
+    cache.prepare(&ctx, &source, &ids, 0, (6., view()), false);
+    assert!(cache.layers.is_none());
+    assert!(cache.drag_images(&ctx, &posed, area).is_some());
+    let coarse = cache.layers.as_ref().unwrap()[0].texture.size();
+    assert!(cache.request.as_ref().unwrap().tried_coarse);
+
+    cache.prepare(&ctx, &source, &ids, 0, (6., view()), false);
+    let exact = &cache.layers.as_ref().unwrap()[0].texture;
+    assert!(exact.size()[0] > coarse[0]);
+    let texture = exact.id();
+    assert!(cache.images(&posed, area).is_some());
+    assert!(!cache.request.as_ref().unwrap().tried_coarse);
+    assert!(cache.job.is_none());
+    cache.prepare(&ctx, &source, &ids, 0, (6., view()), false);
+    assert_eq!(cache.layers.as_ref().unwrap()[0].texture.id(), texture);
+}
+
+#[test]
+fn a_large_ready_selection_waits_to_upload_until_idle() {
+    let mut doc = Document::default();
+    let first = doc.add_rectangle([0.; 2], [1600.; 2], [255; 4]);
+    let second = doc.add_rectangle([20.; 2], [10.; 2], [255; 4]);
+    let source = Arc::new(doc);
+    let ids = [first, second];
+    let ctx = egui::Context::default();
+    let viewport = Rect::from_min_size(Pos2::ZERO, egui::Vec2::splat(1700.));
+    let mut cache = SelectionMove::default();
+    cache.prepare(&ctx, &source, &ids, 0, (1., viewport), false);
+    assert!(cache
+        .drag_images(
+            &ctx,
+            &source,
+            View {
+                board: viewport,
+                scale: 1.
+            }
+        )
+        .is_some());
+    let coarse = cache.layers.as_ref().unwrap()[0].texture.id();
+    let exact = PreparedLayers::new(
+        capture(
+            &source,
+            &ids,
+            0,
+            1.,
+            viewport,
+            renderer::MAX_SPRITE_EDGE,
+            &AtomicBool::new(false),
+        )
+        .unwrap(),
+    );
+    assert!(exact.bytes > HELD_UPLOAD_BYTES);
+    let (send, receiver) = mpsc::channel();
+    send.send(Some(exact)).unwrap();
+    cache.job = Some(Job {
+        receiver,
+        ready: None,
+        cancel: Default::default(),
+    });
+
+    cache.prepare(&ctx, &source, &ids, 0, (1., viewport), false);
+    assert_eq!(cache.layers.as_ref().unwrap()[0].texture.id(), coarse);
+    assert!(cache.job.as_ref().unwrap().ready.is_some());
+    cache.prepare(&ctx, &source, &ids, 0, (1., viewport), true);
+    assert_ne!(cache.layers.as_ref().unwrap()[0].texture.id(), coarse);
+    assert!(cache.job.is_none());
+}
+
+#[test]
 fn sparse_selection_in_a_dense_drawing_waits_for_a_transform() {
     let mut doc = Document::default();
     let first = doc.add_rectangle([0.; 2], [8.; 2], [255; 4]);

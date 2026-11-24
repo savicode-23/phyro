@@ -458,8 +458,7 @@ impl Gesture {
                     shape,
                     style.layer,
                 );
-                let object = doc.objects.last_mut().expect("add_shape appends an object");
-                style.paint_new_object(object);
+                style.paint_new_object(doc);
                 (true, Some(id))
             }
             Self::Move {
@@ -477,8 +476,14 @@ impl Gesture {
                 }
                 for (axis, flip) in flips.iter().enumerate() {
                     if *flip {
-                        changed |=
-                            super::flip_selection(doc, ids, frame, axis == 0, style.key_mode);
+                        changed |= super::flip_selection_in(
+                            doc,
+                            ids,
+                            frame,
+                            axis == 0,
+                            style.key_mode,
+                            SelectionScope::Objects,
+                        );
                     }
                 }
                 (changed, None)

@@ -1,4 +1,4 @@
-use super::editable_selection;
+use super::SelectionScope;
 use document_core::{Document, VectorObject};
 use eframe::egui::{pos2, Rect};
 use std::collections::{HashMap, HashSet};
@@ -11,8 +11,19 @@ pub enum Arrange {
     ToBack,
 }
 
-pub fn arrange(doc: &mut Document, ids: &[u64], frame: u32, order: Arrange) {
-    let selected: HashSet<_> = editable_selection(doc, ids).into_iter().collect();
+#[cfg(test)]
+fn arrange(doc: &mut Document, ids: &[u64], frame: u32, order: Arrange) {
+    arrange_in(doc, ids, frame, order, SelectionScope::Groups);
+}
+
+pub fn arrange_in(
+    doc: &mut Document,
+    ids: &[u64],
+    frame: u32,
+    order: Arrange,
+    scope: SelectionScope,
+) {
+    let selected: HashSet<_> = scope.resolve(doc, ids).into_iter().collect();
     if selected.is_empty() {
         return;
     }
@@ -25,8 +36,10 @@ pub fn arrange(doc: &mut Document, ids: &[u64], frame: u32, order: Arrange) {
         .map(|o| (o.layer, Vec::new()))
         .collect();
     for (slot, object) in doc.objects.iter().enumerate() {
-        if let Some(layer) = layers.get_mut(&object.layer) {
-            layer.push(slot);
+        if scope.contains(object) {
+            if let Some(layer) = layers.get_mut(&object.layer) {
+                layer.push(slot);
+            }
         }
     }
     for slots in layers.values_mut() {
@@ -41,7 +54,7 @@ pub fn arrange(doc: &mut Document, ids: &[u64], frame: u32, order: Arrange) {
             continue;
         }
         let targets = if matches!(order, Arrange::Forward | Arrange::Backward) {
-            step_targets(&doc.objects, slots, &moving, frame)
+            step_targets(&doc.objects, slots, &moving, frame, scope)
         } else {
             vec![slots.len(); slots.len()]
         };
@@ -81,10 +94,16 @@ fn step_targets(
     slots: &[usize],
     moving: &[bool],
     frame: u32,
+    scope: SelectionScope,
 ) -> Vec<usize> {
+    let unit = |slot: usize| {
+        (scope == SelectionScope::Groups)
+            .then_some(objects[slot].group)
+            .flatten()
+    };
     let mut groups: HashMap<u64, Vec<usize>> = HashMap::new();
     for (i, &slot) in slots.iter().enumerate() {
-        if let Some(group) = objects[slot].group {
+        if let Some(group) = unit(slot) {
             groups.entry(group).or_default().push(i);
         }
     }
@@ -94,11 +113,7 @@ fn step_targets(
         .enumerate()
         .filter(|(_, selected)| **selected)
         .fold(Rect::NOTHING, |rect, (i, _)| rect.union(bounds(i)));
-    let edge = |i: usize| {
-        objects[slots[i]]
-            .group
-            .map_or(i, |g| *groups[&g].last().unwrap())
-    };
+    let edge = |i: usize| unit(slots[i]).map_or(i, |g| *groups[&g].last().unwrap());
     let mut targets: Vec<_> = (0..slots.len()).collect();
     let mut group_bounds = HashMap::new();
     let mut pending = Vec::new();
@@ -108,7 +123,7 @@ fn step_targets(
                 pending.push(i);
             }
         } else if !pending.is_empty() {
-            let candidate = if let Some(group) = objects[slot].group {
+            let candidate = if let Some(group) = unit(slot) {
                 *group_bounds.entry(group).or_insert_with(|| {
                     groups[&group]
                         .iter()

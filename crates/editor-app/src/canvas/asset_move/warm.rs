@@ -107,6 +107,9 @@ impl Warm {
             selected: selection,
             area,
         });
+        if renderer::requires_scene_compositing(doc) {
+            return;
+        }
         // Keep idle work bounded even for a vast pasteboard. The active selection
         // and frontmost nearby objects have priority. Sorting child vectors or
         // traversing their geometry would make opening the parent unnecessarily expensive.

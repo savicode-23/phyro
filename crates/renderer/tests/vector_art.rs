@@ -211,6 +211,7 @@ fn layers_control_paint_order_and_visibility() {
         name: "Foreground".into(),
         visible: true,
         locked: true,
+        blend_mode: Default::default(),
     });
     doc.add_shape([4.0, 4.0], [16.0, 16.0], RED, Shape::Ellipse, 2);
     doc.add_rectangle([4.0, 4.0], [16.0, 16.0], BLUE);

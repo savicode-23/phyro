@@ -57,6 +57,71 @@ fn history_counts_one_recoverable_clipping_path_across_group_members_and_snapsho
 }
 
 #[test]
+fn history_counts_a_nested_clip_once_across_placements() {
+    let mut scene = project(1);
+    let source = scene.add_clip("Child drawing").unwrap();
+    scene.clips[source]
+        .drawing_at_mut(0)
+        .add_rectangle([1.; 2], [5.; 2], [255; 4]);
+    scene.clips[source].duplicate_frame(0).unwrap();
+    let child = scene.clips[source].id;
+    for x in [0., 20.] {
+        scene.place_clip(child, 0, 0, 1, [x, 0.]).unwrap();
+    }
+    let placements = &scene.clips[0].drawing_at(0).objects[1..];
+    let cached = |object: &VectorObject| {
+        object
+            .clip_instance
+            .as_ref()
+            .unwrap()
+            .shared_clip()
+            .unwrap()
+            .clone()
+    };
+    let clip = cached(&placements[0]);
+    assert!(Arc::ptr_eq(&clip, &cached(&placements[1])));
+    let mut seen = HashSet::new();
+    assert!(object_heap_bytes(&placements[0], &mut seen) > clip.cels.len() * 128);
+    assert_eq!(
+        object_heap_bytes(&placements[1], &mut seen),
+        placements[1].name.capacity()
+    );
+}
+
+#[test]
+fn pruning_keeps_the_same_contiguous_undo_and_redo_entries() {
+    let entry = |frame| Transaction {
+        reviewed: false,
+        clip: 0,
+        frame,
+        edit: ProjectEdit::Artboard([512; 2]),
+    };
+    let mut history = History {
+        past: (0..3).map(entry).collect(),
+        future: (3..6).rev().map(entry).collect(),
+        ..Default::default()
+    };
+    let bytes = size_of::<ProjectEdit>();
+    let frames = |stack: &VecDeque<Transaction>| stack.iter().map(|e| e.frame).collect::<Vec<_>>();
+    history.trim_to_budget(bytes * 4);
+    assert_eq!(frames(&history.past), [2]);
+    assert_eq!(frames(&history.future), [5, 4, 3]);
+    history.trim_to_budget(bytes * 2);
+    assert!(history.past.is_empty());
+    assert_eq!(frames(&history.future), [4, 3]);
+    history.future.back_mut().unwrap().reviewed = true;
+    history.trim_to_budget(0);
+    assert_eq!(frames(&history.future), [3]);
+    history.future.back_mut().unwrap().reviewed = false;
+    history.trim_to_budget(0);
+    assert!(history.future.is_empty());
+
+    history.past.extend((0..150).map(entry));
+    history.trim_to_budget(usize::MAX);
+    assert_eq!(frames(&history.past), (22..150).collect::<Vec<_>>());
+}
+
+#[test]
 fn same_order_history_counts_only_changed_objects_and_their_currently_saved_geometry() {
     let project = project(1_000);
     let before = project.clips[0].drawing_at(0);

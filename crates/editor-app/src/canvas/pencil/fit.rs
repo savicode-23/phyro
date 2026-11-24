@@ -144,6 +144,19 @@ impl Samples<'_> {
         // A long shallow bow needs a tighter relative error than a broad
         // sweep. Keep a floor so subpixel hand jitter does not create knots.
         let tolerance = (0.18 * bend).clamp(self.noise_floor, self.tolerance);
+        // Jitter on only part of a straight trace skews its cumulative length.
+        // Its samples can miss their assigned parameters even when the whole
+        // trace fits a line. Monotone projection puts both endpoints and every
+        // intervening edge in the same tolerance strip without cutting a turn.
+        if worst > tolerance * tolerance
+            && axis != Vec2::ZERO
+            && bend <= tolerance
+            && self.points[start..=end]
+                .windows(2)
+                .all(|edge| (edge[1] - edge[0]).dot(axis) >= 0.)
+        {
+            return (Vec2::ZERO, Vec2::ZERO, None);
+        }
         (
             left,
             right,

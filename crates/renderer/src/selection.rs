@@ -75,16 +75,18 @@ fn thumbnail_frames_large_offpage_art_in_a_bounded_surface_and_uses_the_current_
 /// first pixel of the tightly cropped result in the scaled artboard coordinate system.
 pub fn render_artwork(
     objects: &[&VectorObject],
+    layers: &[document_core::Layer],
     frame: u32,
     scale: impl Into<f64>,
 ) -> Result<(Pixmap, [i32; 2]), String> {
-    render_artwork_pose(objects, frame, scale)?
+    render_artwork_pose(objects, layers, frame, scale)?
         .ok_or_else(|| "The selected artwork has no painted pixels at this frame.".into())
 }
 
 /// Render the tight painted pose, returning None for a transparent animation frame.
 pub fn render_artwork_pose(
     objects: &[&VectorObject],
+    layers: &[document_core::Layer],
     frame: u32,
     scale: impl Into<f64>,
 ) -> Result<Option<(Pixmap, [i32; 2])>, String> {
@@ -108,7 +110,13 @@ pub fn render_artwork_pose(
     .unwrap_or(rect);
     let transform = Transform::from_scale(scale as f32, scale as f32)
         .post_translate(-(rect.left() as f32), -(rect.top() as f32));
-    let mut image = selection_image(objects, frame, [rect.width(), rect.height()], transform)?;
+    let mut image = selection_image(
+        objects,
+        layers,
+        frame,
+        [rect.width(), rect.height()],
+        transform,
+    )?;
     let Some(crop) = ink_bounds(&image) else {
         return Ok(None);
     };
@@ -124,6 +132,7 @@ pub fn render_artwork_pose(
 /// Render an existing crop at its final integer dimensions, using native vector geometry.
 pub fn render_artwork_in_viewport(
     objects: &[&VectorObject],
+    layers: &[document_core::Layer],
     frame: u32,
     origin: [i32; 2],
     native: [u32; 2],
@@ -139,23 +148,23 @@ pub fn render_artwork_in_viewport(
     let sy = output[1] as f32 / native[1] as f32;
     let transform = Transform::from_scale(sx, sy)
         .post_translate(-(origin[0] as f32) * sx, -(origin[1] as f32) * sy);
-    selection_image(objects, frame, output, transform)
+    selection_image(objects, layers, frame, output, transform)
 }
 
 fn selection_image(
     objects: &[&VectorObject],
+    layers: &[document_core::Layer],
     frame: u32,
     size: [u32; 2],
     transform: Transform,
 ) -> Result<Pixmap, String> {
     let mut image =
         Pixmap::new(size[0], size[1]).ok_or("Could not allocate the selection image.")?;
-    clip_groups::paint(
+    clip_groups::paint_with_layers(
         &mut image,
         clip_groups::runs(objects.iter().copied(), frame),
-        frame,
-        transform,
-        [transform.tx, transform.ty],
+        layers,
+        (frame, transform, [transform.tx, transform.ty]),
         Some(&mut SymbolBounds::new()),
         RenderPurpose::Export,
     )?;

@@ -1,4 +1,5 @@
 use super::{appearance, bounds::SymbolBounds, draw_member, Pixmap, Transform, VectorObject};
+use document_core::{BlendMode, Layer};
 use std::collections::HashMap;
 use tiny_skia::PixmapPaint;
 
@@ -122,6 +123,86 @@ pub(super) fn paint<'a>(
     Ok(())
 }
 
+/// Paint an ordered subset of a drawing. A non-Normal layer assembles its
+/// members against transparency, then blends the result over the lower layers.
+pub(super) fn paint_with_layers<'a>(
+    surface: &mut Pixmap,
+    objects: impl Iterator<Item = (usize, &'a VectorObject)>,
+    layers: &[Layer],
+    (frame, transform, origin): (u32, Transform, [f32; 2]),
+    mut symbols: Option<&mut SymbolBounds>,
+    purpose: super::RenderPurpose,
+) -> Result<(), String> {
+    if layers.iter().all(|layer| layer.blend_mode.is_normal()) {
+        return paint(surface, objects, frame, transform, origin, symbols, purpose);
+    }
+    let modes: HashMap<_, _> = layers.iter().map(|l| (l.id, l.blend_mode)).collect();
+    let mut objects = objects.peekable();
+    let mut layer: Option<Pixmap> = None;
+    let full = tiny_skia::IntRect::from_xywh(0, 0, surface.width(), surface.height()).unwrap();
+    let mut prior = None;
+    while let Some(first) = objects.next() {
+        let mode = modes.get(&first.1.layer).copied().unwrap_or_default();
+        if mode == BlendMode::Normal {
+            let normal = std::iter::once(first).chain(std::iter::from_fn(|| {
+                objects.next_if(|(_, o)| modes.get(&o.layer).is_none_or(BlendMode::is_normal))
+            }));
+            paint(
+                surface,
+                normal,
+                frame,
+                transform,
+                origin,
+                symbols.as_deref_mut(),
+                purpose,
+            )?;
+            continue;
+        }
+        let mut area = None;
+        let members = std::iter::once(first)
+            .chain(std::iter::from_fn(|| {
+                objects.next_if(|(_, o)| o.layer == first.1.layer)
+            }))
+            .inspect(|(_, o)| {
+                if area != Some(full)
+                    && o.visible_at(frame)
+                    && o.opacity_at(frame) > 0.
+                    && (purpose == super::RenderPurpose::Editor || !o.reference_only)
+                {
+                    let bounds = super::bounds::pixel_bounds(o, frame, transform).unwrap_or(full);
+                    if let Some(bounds) = bounds.intersect(&full) {
+                        area = Some(area.map_or(bounds, |a| super::bounds::union(a, bounds)));
+                    }
+                }
+            });
+        let pixels = if let Some(pixels) = &mut layer {
+            if let Some(prior) = prior {
+                super::clear_region(pixels, prior);
+            }
+            pixels
+        } else {
+            layer.insert(
+                Pixmap::new(surface.width(), surface.height())
+                    .ok_or("Could not allocate a layer for blending.")?,
+            )
+        };
+        paint(
+            pixels,
+            members,
+            frame,
+            transform,
+            origin,
+            symbols.as_deref_mut(),
+            purpose,
+        )?;
+        if let Some(area) = area {
+            super::composite_region(surface, pixels, area, 1., mode, None);
+        }
+        prior = area;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -173,7 +254,7 @@ mod tests {
         let image = render(&doc, 0).unwrap();
         assert!(image.data() == expected.data());
         assert!(render_editable(&doc, 0, 1.).unwrap().0.data() == image.data());
-        let (crop, [x, y]) = render_artwork(&doc.paint_order(), 0, 1).unwrap();
+        let (crop, [x, y]) = render_artwork(&doc.paint_order(), &doc.layers, 0, 1).unwrap();
         let pixel = image.pixel(18, 30).unwrap();
         assert_eq!(crop.pixel((18 - x) as u32, (30 - y) as u32).unwrap(), pixel);
         assert_eq!(

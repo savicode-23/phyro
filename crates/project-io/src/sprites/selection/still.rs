@@ -183,7 +183,7 @@ fn write_selection_png(
         .filter(|m| m.layer_visible)
         .map(|m| m.object)
         .collect();
-    let crop = selection_crop(&art, frame)?;
+    let crop = selection_crop(&art, &doc.layers, frame)?;
     let origin = crop.origin.map(|v| (f64::from(v) * scale).round());
     if origin
         .iter()
@@ -199,7 +199,7 @@ fn write_selection_png(
             .ok_or_else(|| invalid("The selection exceeds the 16 megapixel PNG limit."))?
     } else {
         drop(crop.image);
-        renderer::render_artwork_in_viewport(&art, frame, crop.origin, crop.size, size)
+        renderer::render_artwork_in_viewport(&art, &doc.layers, frame, crop.origin, crop.size, size)
             .map_err(invalid)?
     };
     let bytes = image.encode_png().map_err(io::Error::other)?;
@@ -223,7 +223,11 @@ struct Crop {
     image: Option<Pixmap>,
 }
 
-fn selection_crop(art: &[&VectorObject], frame: u32) -> io::Result<Crop> {
+fn selection_crop(
+    art: &[&VectorObject],
+    layers: &[document_core::Layer],
+    frame: u32,
+) -> io::Result<Crop> {
     let [l, t, r, b] = renderer::artwork_bounds(art, frame, 1)
         .map_err(invalid)?
         .ok_or_else(|| invalid("The selection has no visible paint."))?;
@@ -237,7 +241,7 @@ fn selection_crop(art: &[&VectorObject], frame: u32) -> io::Result<Crop> {
             image: None,
         });
     }
-    let (image, origin) = renderer::render_artwork(art, frame, 1).map_err(invalid)?;
+    let (image, origin) = renderer::render_artwork(art, layers, frame, 1).map_err(invalid)?;
     Ok(Crop {
         origin,
         size: [image.width(), image.height()],
@@ -255,13 +259,14 @@ pub fn selection_png_native_size(clip: &Clip, frame: u32, ids: &[u64]) -> io::Re
     if frame >= clip.frames || !clip.cels.contains_key(&0) {
         return Err(invalid("Choose a frame inside the clip."));
     }
-    let members = super::selection(clip.drawing_at(frame), frame, ids, 1.)?;
+    let doc = clip.drawing_at(frame);
+    let members = super::selection(doc, frame, ids, 1.)?;
     let art = members
         .iter()
         .filter(|m| m.layer_visible)
         .map(|m| m.object)
         .collect::<Vec<_>>();
-    Ok(selection_crop(&art, frame)?.size)
+    Ok(selection_crop(&art, &doc.layers, frame)?.size)
 }
 
 /// Measure the same visible pixels used by the writer, including the crop of each top-level group.
@@ -305,7 +310,8 @@ pub fn png_dimensions(
             .collect::<Vec<_>>();
         let object = unit[0].object;
         let name = super::Unit::of(object).label(object);
-        let (image, _) = renderer::render_artwork(&art, frame, scale).map_err(invalid)?;
+        let (image, _) =
+            renderer::render_artwork(&art, &doc.layers, frame, scale).map_err(invalid)?;
         assets.push((name, [image.width(), image.height()]));
     }
     Ok(PngDimensions {

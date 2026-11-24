@@ -1,7 +1,8 @@
 #[cfg(test)]
 use document_core::Shape;
-use document_core::{Document, KeyValue, LineCap, LineJoin, Property, VectorObject};
+use document_core::{arrange::SelectionScope, Document, KeyValue, LineCap, LineJoin, Property};
 use eframe::egui::{self, DragValue, Ui};
+use std::sync::Arc;
 
 use crate::canvas::CanvasStyle;
 use crate::timeline::KeyMode;
@@ -12,6 +13,7 @@ pub(crate) mod appearance;
 mod selection_header;
 pub(crate) use selection_header::show as selection_title;
 pub(crate) mod arrange_ui;
+mod blending;
 mod color_row;
 mod gradient;
 #[cfg(test)]
@@ -97,7 +99,11 @@ impl Tab {
         }
     }
 
-    pub fn scroll(self) -> egui::ScrollArea {
+    pub fn scroll(self, ui: &mut Ui) -> egui::ScrollArea {
+        if self == Self::Properties {
+            // The paint buttons reach the right edge of the inspector.
+            ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
+        }
         // Extremely long layer names or numeric values may require horizontal
         // scrolling. Their minimum width must never push the canvas sideways.
         egui::ScrollArea::both()
@@ -113,7 +119,7 @@ pub fn show(
     frame: u32,
     style: &mut CanvasStyle,
     edit_selection: bool,
-    snapshot: &std::sync::Arc<Document>,
+    snapshot: &Arc<Document>,
 ) -> Option<crate::canvas::PaintChannel> {
     let id = ui.make_persistent_id("symbol-inspector-tab");
     let mut tab: Tab = ui.data(|d| d.get_temp(id)).unwrap_or_default();
@@ -132,11 +138,20 @@ pub fn show(
         layers(ui, clip, selected, frame, style);
         None
     } else {
-        let doc = clip.drawing_at_mut(frame);
-        tab.scroll()
+        let doc = clip.drawing_snapshot_mut(frame);
+        tab.scroll(ui)
             .show(ui, |ui| {
                 selection_title(ui, doc, Some(snapshot), selected, frame);
-                let picker = properties(ui, doc, selected, frame, style, edit_selection, reveal);
+                let picker = properties(
+                    ui,
+                    doc,
+                    selected,
+                    frame,
+                    style,
+                    edit_selection,
+                    reveal,
+                    SelectionScope::Groups,
+                );
                 snapping(ui, doc, style, true);
                 picker
             })
@@ -144,14 +159,16 @@ pub fn show(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn properties(
     ui: &mut Ui,
-    doc: &mut Document,
+    doc: &mut Arc<Document>,
     selected: &mut Vec<u64>,
     frame: u32,
     style: &mut CanvasStyle,
     edit_selection: bool,
     reveal: bool,
+    scope: SelectionScope,
 ) -> Option<crate::canvas::PaintChannel> {
     let mut picker = None;
     egui::CollapsingHeader::new(if selected.is_empty() {
@@ -178,8 +195,8 @@ pub(crate) fn properties(
     if !selected.is_empty() || reveal {
         let align = egui::CollapsingHeader::new("Align and Distribute")
             .open(reveal.then_some(true))
-            .show(ui, |ui| {
-                arrange_ui::panel(ui, doc, selected, frame, style.key_mode)
+            .show_unindented(ui, |ui| {
+                arrange_ui::panel(ui, doc, selected, frame, style.key_mode, scope)
             });
         if reveal {
             align.header_response.scroll_to_me(Some(egui::Align::Min));
@@ -193,34 +210,27 @@ pub(crate) fn properties(
             o.id == selected[0]
                 && o.text.is_none()
                 && commands::has_vector_paint(o)
-                && commands::is_editable(doc, o.layer)
+                && document_core::arrange::is_object_editable(doc, o)
         }) {
-            crate::path_editor::show(ui, &mut doc.objects[index], frame, style.key_mode);
+            crate::path_editor::show(ui, doc, index, frame, style.key_mode);
         }
     }
     if edit_selection {
         crate::path_editor::split_or_join(ui, doc, selected, frame);
     }
     if let [id] = selected.as_slice() {
-        if let Some(object) = doc.objects.iter_mut().find(|o| o.id == *id) {
-            if commands::has_vector_paint(object) {
-                let previous = (object.cap, object.join);
-                ui.collapsing("Paint options", |ui| paint_options(ui, object));
-                if object.cap != previous.0 {
-                    style.cap = object.cap;
-                }
-                if object.join != previous.1 {
-                    style.join = object.join;
-                }
+        if let Some(index) = doc.objects.iter().position(|o| o.id == *id) {
+            if commands::has_vector_paint(&doc.objects[index]) {
+                ui.collapsing("Paint options", |ui| paint_options(ui, doc, index, style));
             }
-            more_transforms(ui, object, frame, style.key_mode);
+            more_transforms(ui, doc, index, frame, style.key_mode);
         }
     }
     if edit_selection && !selected.is_empty() {
         motion::show(ui, doc, selected, frame, style);
     }
     if !selected.is_empty() {
-        ui.collapsing("Arrange", |ui| arrangement(ui, doc, selected, frame));
+        ui.collapsing("Arrange", |ui| arrangement(ui, doc, selected, frame, scope));
     }
     picker
 }
@@ -244,7 +254,12 @@ pub(crate) fn align_shortcut(ui: &mut Ui) -> bool {
         })
 }
 
-pub(crate) fn snapping(ui: &mut Ui, doc: &mut Document, style: &mut CanvasStyle, standalone: bool) {
+pub(crate) fn snapping(
+    ui: &mut Ui,
+    doc: &mut Arc<Document>,
+    style: &mut CanvasStyle,
+    standalone: bool,
+) {
     ui.collapsing("Snapping and guides", |ui| {
         ui.checkbox(&mut style.snap.enabled, "Enable snapping");
         ui.add_enabled_ui(style.snap.enabled, |ui| {
@@ -272,25 +287,26 @@ pub(crate) fn snapping(ui: &mut Ui, doc: &mut Document, style: &mut CanvasStyle,
                 );
             });
         });
-        guides(ui, "Vertical", &mut doc.guides_x, doc.width);
-        guides(ui, "Horizontal", &mut doc.guides_y, doc.height);
+        let mut x = doc.guides_x.clone();
+        let mut y = doc.guides_y.clone();
+        guides(ui, "Vertical", &mut x, doc.width);
+        guides(ui, "Horizontal", &mut y, doc.height);
+        if x != doc.guides_x || y != doc.guides_y {
+            let doc = Arc::make_mut(doc);
+            doc.guides_x = x;
+            doc.guides_y = y;
+        }
     });
 }
 
-fn paint_options(ui: &mut Ui, object: &mut VectorObject) {
+fn paint_options(ui: &mut Ui, doc: &mut Arc<Document>, index: usize, style: &mut CanvasStyle) {
+    let object = &doc.objects[index];
+    let (mut fill_rule, mut cap, mut join) = (object.fill_rule, object.cap, object.join);
     if !object.shape.contours().is_empty() {
         ui.horizontal_wrapped(|ui| {
             ui.label("Fill rule");
-            ui.selectable_value(
-                &mut object.fill_rule,
-                document_core::FillRule::NonZero,
-                "Nonzero",
-            );
-            ui.selectable_value(
-                &mut object.fill_rule,
-                document_core::FillRule::EvenOdd,
-                "Even-odd",
-            );
+            ui.selectable_value(&mut fill_rule, document_core::FillRule::NonZero, "Nonzero");
+            ui.selectable_value(&mut fill_rule, document_core::FillRule::EvenOdd, "Even-odd");
         });
     }
     ui.collapsing("Stroke ends and corners", |ui| {
@@ -299,26 +315,36 @@ fn paint_options(ui: &mut Ui, object: &mut VectorObject) {
             return;
         }
         egui::ComboBox::from_label("Cap")
-            .selected_text(format!("{:?}", object.cap))
+            .selected_text(format!("{cap:?}"))
             .show_ui(ui, |ui| {
-                for cap in [LineCap::Butt, LineCap::Round, LineCap::Square] {
-                    ui.selectable_value(&mut object.cap, cap, format!("{cap:?}"));
+                for value in [LineCap::Butt, LineCap::Round, LineCap::Square] {
+                    ui.selectable_value(&mut cap, value, format!("{value:?}"));
                 }
             });
         egui::ComboBox::from_label("Join")
-            .selected_text(format!("{:?}", object.join))
+            .selected_text(format!("{join:?}"))
             .show_ui(ui, |ui| {
-                for join in [LineJoin::Miter, LineJoin::Round, LineJoin::Bevel] {
-                    let choice = ui.selectable_value(&mut object.join, join, format!("{join:?}"));
-                    if join == LineJoin::Miter {
+                for value in [LineJoin::Miter, LineJoin::Round, LineJoin::Bevel] {
+                    let choice = ui.selectable_value(&mut join, value, format!("{value:?}"));
+                    if value == LineJoin::Miter {
                         choice.on_hover_text("Very sharp corners bevel to prevent long spikes.");
                     }
                 }
             });
     });
+    if (fill_rule, cap, join) != (object.fill_rule, object.cap, object.join) {
+        if cap != object.cap {
+            style.cap = cap;
+        }
+        if join != object.join {
+            style.join = join;
+        }
+        let object = &mut Arc::make_mut(doc).objects[index];
+        (object.fill_rule, object.cap, object.join) = (fill_rule, cap, join);
+    }
 }
 
-fn opacity(ui: &mut Ui, doc: &mut Document, selected: &[u64], frame: u32, mode: KeyMode) {
+fn opacity(ui: &mut Ui, doc: &mut Arc<Document>, selected: &[u64], frame: u32, mode: KeyMode) {
     let Some(primary) = selected
         .last()
         .and_then(|id| doc.objects.iter().find(|o| o.id == *id))
@@ -339,7 +365,7 @@ fn opacity(ui: &mut Ui, doc: &mut Document, selected: &[u64], frame: u32, mode: 
         })
         .inner;
     if changed && percent.is_finite() {
-        for o in &mut doc.objects {
+        for o in &mut Arc::make_mut(doc).objects {
             if selected.contains(&o.id) && mode.prepare(o, frame, Property::Opacity) {
                 o.set_opacity_at(frame, percent / 100.);
             }
@@ -347,13 +373,14 @@ fn opacity(ui: &mut Ui, doc: &mut Document, selected: &[u64], frame: u32, mode: 
     }
 }
 
-fn transform(ui: &mut Ui, doc: &mut Document, selected: &[u64], frame: u32, mode: KeyMode) {
+fn transform(ui: &mut Ui, doc: &mut Arc<Document>, selected: &[u64], frame: u32, mode: KeyMode) {
     let [id] = selected else {
         return;
     };
-    let Some(obj) = doc.objects.iter_mut().find(|o| o.id == *id) else {
+    let Some(index) = doc.objects.iter().position(|o| o.id == *id) else {
         return;
     };
+    let obj = &doc.objects[index];
     let previous_position = obj.position_at(frame);
     let mut position = previous_position;
     let mut size = obj.size;
@@ -375,14 +402,20 @@ fn transform(ui: &mut Ui, doc: &mut Document, selected: &[u64], frame: u32, mode
             }
         });
     }
+    let rotation_changed = ui
+        .horizontal(|ui| {
+            ui.label("Rotation");
+            number(ui, &mut rotation, 0.5, "°", None)
+        })
+        .inner;
+    if size == obj.size && !rotation_changed && position == previous_position {
+        return;
+    }
+    let obj = &mut Arc::make_mut(doc).objects[index];
     let size_changed = size != obj.size && obj.set_base_size(size);
-    ui.horizontal(|ui| {
-        ui.label("Rotation");
-        if number(ui, &mut rotation, 0.5, "°", None) && mode.prepare(obj, frame, Property::Rotation)
-        {
-            obj.set_rotation_at(frame, rotation);
-        }
-    });
+    if rotation_changed && mode.prepare(obj, frame, Property::Rotation) {
+        obj.set_rotation_at(frame, rotation);
+    }
     if (position != previous_position
         || size_changed && obj.pivot.is_none() && position != obj.position_at(frame))
         && mode.prepare(obj, frame, Property::Position)
@@ -390,14 +423,16 @@ fn transform(ui: &mut Ui, doc: &mut Document, selected: &[u64], frame: u32, mode
         obj.set_position_at(frame, position);
     }
 }
-fn more_transforms(ui: &mut Ui, obj: &mut VectorObject, frame: u32, mode: KeyMode) {
+fn more_transforms(ui: &mut Ui, doc: &mut Arc<Document>, index: usize, frame: u32, mode: KeyMode) {
+    let obj = &doc.objects[index];
     let signed_scale = obj.scale_at(frame);
     let mut scale = signed_scale.map(f32::abs);
+    let mut visible = obj.visible_at(frame);
+    let mut skew = obj.skew_at(frame);
+    let mut visible_changed = false;
+    let mut skew_changed = false;
     ui.collapsing("Scale and skew", |ui| {
-        let mut visible = obj.visible_at(frame);
-        if ui.checkbox(&mut visible, "Visible").changed() {
-            mode.set(obj, frame, Property::Visibility, KeyValue::Visible(visible));
-        }
+        visible_changed = ui.checkbox(&mut visible, "Visible").changed();
         egui::Grid::new("scale-fields").show(ui, |ui| {
             for (label, value) in ["Scale X", "Scale Y"].into_iter().zip(&mut scale) {
                 ui.label(label);
@@ -405,22 +440,29 @@ fn more_transforms(ui: &mut Ui, obj: &mut VectorObject, frame: u32, mode: KeyMod
                 ui.end_row();
             }
             ui.label("Skew");
-            let mut skew = obj.skew_at(frame);
-            if ui
+            skew_changed = ui
                 .add(
                     DragValue::new(&mut skew)
                         .speed(0.25)
                         .range(-85.0..=85.)
                         .suffix("°"),
                 )
-                .changed()
-            {
-                mode.set(obj, frame, Property::Skew, KeyValue::Scalar(skew));
-            }
+                .changed();
             ui.end_row();
         });
     });
-    if scale != signed_scale.map(f32::abs) && mode.prepare(obj, frame, Property::Scale) {
+    let scale_changed = scale != signed_scale.map(f32::abs);
+    if !visible_changed && !skew_changed && !scale_changed {
+        return;
+    }
+    let obj = &mut Arc::make_mut(doc).objects[index];
+    if visible_changed {
+        mode.set(obj, frame, Property::Visibility, KeyValue::Visible(visible));
+    }
+    if skew_changed {
+        mode.set(obj, frame, Property::Skew, KeyValue::Scalar(skew));
+    }
+    if scale_changed && mode.prepare(obj, frame, Property::Scale) {
         obj.set_scale_at(
             frame,
             std::array::from_fn(|i| scale[i].copysign(signed_scale[i])),
@@ -430,36 +472,46 @@ fn more_transforms(ui: &mut Ui, obj: &mut VectorObject, frame: u32, mode: KeyMod
 
 pub(crate) use layer_tree::{finish_rename_on_blur, layers};
 
-fn arrangement(ui: &mut Ui, doc: &mut Document, selected: &mut Vec<u64>, frame: u32) {
+fn arrangement(
+    ui: &mut Ui,
+    doc: &mut Arc<Document>,
+    selected: &mut Vec<u64>,
+    frame: u32,
+    scope: SelectionScope,
+) {
     ui.add_enabled_ui(!selected.is_empty(), |ui| {
         ui.horizontal_wrapped(|ui| {
-            let grouping = commands::grouping_options(doc, selected);
+            let grouping = if scope == SelectionScope::Groups {
+                commands::grouping_options(doc, selected)
+            } else {
+                commands::GroupingOptions::default()
+            };
             if ui
                 .add_enabled(grouping.can_group, egui::Button::new("Group"))
                 .on_hover_text("Group two or more objects on the same layer")
                 .clicked()
             {
-                commands::GroupAction::Group.apply(doc, selected);
+                commands::GroupAction::Group.apply(Arc::make_mut(doc), selected);
             }
             if ui
                 .add_enabled(grouping.can_ungroup, egui::Button::new("Ungroup"))
                 .clicked()
             {
-                commands::GroupAction::Ungroup.apply(doc, selected);
+                commands::GroupAction::Ungroup.apply(Arc::make_mut(doc), selected);
             }
             if ui
                 .button("To front")
                 .on_hover_text("Bring to front (Home)")
                 .clicked()
             {
-                commands::arrange(doc, selected, frame, Arrange::ToFront);
+                commands::arrange_in(Arc::make_mut(doc), selected, frame, Arrange::ToFront, scope);
             }
             if ui
                 .button("To back")
                 .on_hover_text("Send to back (End)")
                 .clicked()
             {
-                commands::arrange(doc, selected, frame, Arrange::ToBack);
+                commands::arrange_in(Arc::make_mut(doc), selected, frame, Arrange::ToBack, scope);
             }
         });
     });
@@ -494,6 +546,7 @@ mod tests {
     fn inspecting_imported_geometry_preserves_subpixel_dimensions() {
         let mut doc = Document::default();
         let id = doc.add_rectangle([0., 0.], [0.002, 1_000_001.], [255; 4]);
+        let mut doc = Arc::new(doc);
         let original = doc.clone();
         let ctx = egui::Context::default();
         let _ = ctx.run(Default::default(), |ctx| {
@@ -501,6 +554,6 @@ mod tests {
                 transform(ui, &mut doc, &[id], 0, KeyMode::default())
             });
         });
-        assert_eq!(doc, original);
+        assert!(Arc::ptr_eq(&doc, &original));
     }
 }

@@ -1,6 +1,7 @@
 mod draft;
 mod folders;
-use document_core::{AnimationProject, SymbolDefinition};
+use crate::canvas::CanvasStyle;
+use document_core::{arrange::Group, AnimationProject, SymbolDefinition};
 use eframe::egui;
 use std::path::{Path, PathBuf};
 
@@ -106,7 +107,7 @@ impl Library {
         p: &mut AnimationProject,
         clip: usize,
         frame: u32,
-        layer: u64,
+        style: &CanvasStyle,
         selection: &mut Vec<u64>,
     ) -> Option<String> {
         ui.horizontal(|ui| {
@@ -119,7 +120,7 @@ impl Library {
             return None;
         }
         let mut status = None;
-        if let Some(result) = self.symbols(ui, p, clip, frame, layer, selection) {
+        if let Some(result) = self.symbols(ui, p, clip, frame, style, selection) {
             match result {
                 Ok(message) => {
                     self.notice = None;
@@ -189,8 +190,19 @@ impl Library {
         frame: u32,
         selection: &mut Vec<u64>,
         name: &str,
+        group: Option<Group>,
     ) -> Result<String, String> {
+        let membership = group.and_then(|group| {
+            let member = group.member(project.clips[clip].drawing_at(frame))?;
+            Some((group, member.group_name.clone()))
+        });
         let (id, object) = project.convert_to_symbol(clip, frame, selection, name)?;
+        if let Some((group, name)) = membership {
+            let doc = project.clips[clip].drawing_at_mut(frame);
+            if let Some(instance) = doc.objects.iter_mut().find(|o| o.id == object) {
+                group.add(instance, name);
+            }
+        }
         self.selected = Some(id);
         self.name = name.to_owned();
         self.notice = None;
@@ -204,7 +216,7 @@ impl Library {
         p: &mut AnimationProject,
         clip: usize,
         frame: u32,
-        layer: u64,
+        style: &CanvasStyle,
         selection: &mut Vec<u64>,
     ) -> Option<Result<String, String>> {
         let mut result = None;
@@ -225,7 +237,14 @@ impl Library {
                 .on_hover_text("Replace adjacent artwork on one layer with a linked instance.")
                 .clicked()
             {
-                result = Some(self.convert_selection(p, clip, frame, selection, &name));
+                result = Some(self.convert_selection(
+                    p,
+                    clip,
+                    frame,
+                    selection,
+                    &name,
+                    style.group_scope().group(),
+                ));
             }
             if ui
                 .add_enabled(enabled, egui::Button::new("Save a copy"))
@@ -284,8 +303,11 @@ impl Library {
                     (doc.height as f32 - h as f32) * 0.5,
                 ];
                 result = Some(
-                    p.place_symbol(id, clip, frame, layer, origin)
+                    p.place_symbol(id, clip, frame, style.layer, origin)
                         .map(|object| {
+                            if let Some(group) = style.group_scope().group() {
+                                group.add_objects(p.clips[clip].drawing_at_mut(frame), &[object]);
+                            }
                             *selection = vec![object];
                             format!("Placed {label} at the center of the artboard.")
                         }),

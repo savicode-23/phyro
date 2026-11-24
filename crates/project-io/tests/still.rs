@@ -27,6 +27,7 @@ fn fixture() -> (Clip, [u64; 3]) {
         name: "Front".into(),
         visible: true,
         locked: false,
+        blend_mode: Default::default(),
     });
     doc.objects[2].layer = 2;
     doc.objects[2].group = Some(1);

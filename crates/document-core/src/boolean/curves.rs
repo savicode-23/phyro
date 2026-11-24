@@ -87,7 +87,10 @@ fn misses(contour: &Contour, [l, t, r, b]: [i64; 4], margin: i64) -> bool {
 }
 
 pub(super) fn filled_nodes(path: &Path, input: &[Contour]) -> Option<Vec<Vec<PathNode>>> {
-    if input.iter().any(|c| !c.closed) || path.verbs().len() > input.len() * (MAX_ANCHORS + 2) {
+    // Account for each contour's MoveTo and Close. A path with many authored
+    // segments that collapsed to the same grid points stays on the polygon path.
+    let max_verbs = super::flatten::MAX_INPUT_POINTS + 2 * input.len();
+    if input.iter().any(|c| !c.closed) || path.verbs().len() > max_verbs {
         return None;
     }
     let mut contours = editable_contours(path, |p| [p.x, p.y])?;

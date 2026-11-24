@@ -774,7 +774,7 @@ dependencies = [
 
 [[package]]
 name = "document-core"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 dependencies = [
  "base64",
  "epaint_default_fonts",
@@ -2390,7 +2390,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "phyro"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 dependencies = [
  "arboard",
  "base64",
@@ -2411,7 +2411,7 @@ dependencies = [
 
 [[package]]
 name = "phyro-automation"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 dependencies = [
  "document-core",
  "getrandom 0.3.4",
@@ -2424,7 +2424,7 @@ dependencies = [
 
 [[package]]
 name = "phyro-cli"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 dependencies = [
  "document-core",
  "phyro-automation",
@@ -2578,7 +2578,7 @@ checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
 
 [[package]]
 name = "project-io"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 dependencies = [
  "document-core",
  "fontdb",
@@ -2723,7 +2723,7 @@ checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 
 [[package]]
 name = "renderer"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 dependencies = [
  "document-core",
  "tiny-skia",

@@ -251,7 +251,7 @@ fn dense_drag_updates_the_displayed_image_through_release_cancel_and_frame_switc
             s.canvas
                 .artwork_texture(
                     ctx,
-                    &s.doc,
+                    &Arc::new(s.doc.clone()),
                     frame,
                     if preview { 1. } else { 2. },
                     staged.as_ref(),

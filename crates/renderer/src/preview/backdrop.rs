@@ -26,6 +26,9 @@ pub fn render_editable(
     frame: u32,
     scale: f32,
 ) -> Result<(Pixmap, Option<EditBackdrop>), String> {
+    if document.layers.iter().any(|l| !l.blend_mode.is_normal()) {
+        return Ok((crate::render_scaled(document, frame, scale)?, None));
+    }
     let page = artboard(document, frame, scale)?;
     let mut pixels = page.allocate()?;
     let objects = document.paint_order();

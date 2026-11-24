@@ -81,6 +81,7 @@ impl StoredDocument {
             Tool::Select
         };
         let mut style = editor.style.clone();
+        style.group_edit = None;
         style.layer = Editor::initial_layer(drawing);
         style.edit_motion = false;
         style.key_mode = Default::default();
@@ -103,10 +104,7 @@ impl StoredDocument {
             tool,
             selection: Vec::new(),
             exports: Default::default(),
-            drafts: editor
-                .drafts
-                .as_ref()
-                .map(|d| DraftSession::new(d.root.clone())),
+            drafts: editor.drafts.as_ref().map(DraftSession::new_tab),
             status: String::new(),
         }
     }
@@ -285,6 +283,7 @@ impl Editor {
         self.text_menu = Default::default();
         self.menu_bar_open = false;
         self.artwork_menu_open = false;
+        self.artwork_menu_group = None;
     }
 
     fn activate_document(&mut self, index: usize) {

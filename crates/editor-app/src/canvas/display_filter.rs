@@ -76,13 +76,26 @@ pub(super) fn affine_image(p: &Painter, texture: TextureId, corners: [Pos2; 4]) 
     batch(p, vec![Image::affine(texture, corners)])
 }
 
+const GRAYSCALE_ID: &str = "canvas grayscale preview";
+
+pub(crate) fn grayscale(ctx: &Context) -> bool {
+    ctx.data(|data| data.get_temp(Id::new(GRAYSCALE_ID)).unwrap_or(false))
+}
+
+pub(crate) fn set_grayscale(ctx: &Context, enabled: bool) {
+    ctx.data_mut(|data| data.insert_temp(Id::new(GRAYSCALE_ID), enabled));
+}
+
 pub(super) fn batch(p: &Painter, mut images: Vec<Image>) -> Shape {
     if images.is_empty() {
         return Shape::Noop;
     }
-    let filter = p
-        .ctx()
-        .data(|data| data.get_temp::<Arc<Filter>>(Id::new("canvas display filter")));
+    let (filter, grayscale) = p.ctx().data(|data| {
+        (
+            data.get_temp::<Arc<Filter>>(Id::new("canvas display filter")),
+            data.get_temp(Id::new(GRAYSCALE_ID)).unwrap_or(false),
+        )
+    });
     let Some(filter) = filter else {
         // Headless UI and older GL contexts use the same antialiased CPU
         // artwork. Nearest sampling there keeps each texel's RGB and alpha paired.
@@ -100,7 +113,7 @@ pub(super) fn batch(p: &Painter, mut images: Vec<Image>) -> Shape {
     Shape::Callback(egui::PaintCallback {
         rect,
         callback: Arc::new(egui_glow::CallbackFn::new(move |info, painter| {
-            filter.draw(&info, painter, &images);
+            filter.draw(&info, painter, &images, grayscale);
         })),
     })
 }
@@ -112,6 +125,7 @@ pub(crate) struct Filter {
     destination: Option<glow::UniformLocation>,
     uv: Option<glow::UniformLocation>,
     tint: Option<glow::UniformLocation>,
+    grayscale: Option<glow::UniformLocation>,
 }
 
 impl Filter {
@@ -179,13 +193,20 @@ impl Filter {
                 destination: gl.get_uniform_location(program, "dst"),
                 uv: gl.get_uniform_location(program, "uv_rect"),
                 tint: gl.get_uniform_location(program, "tint"),
+                grayscale: gl.get_uniform_location(program, "grayscale"),
             });
             ctx.data_mut(|data| data.insert_temp(Id::new("canvas display filter"), filter.clone()));
             Some(filter)
         }
     }
 
-    fn draw(&self, info: &egui::PaintCallbackInfo, painter: &egui_glow::Painter, images: &[Image]) {
+    fn draw(
+        &self,
+        info: &egui::PaintCallbackInfo,
+        painter: &egui_glow::Painter,
+        images: &[Image],
+        grayscale: bool,
+    ) {
         let [w, h] = info.screen_size_px;
         let sx = 2. * info.pixels_per_point / w as f32;
         let sy = -2. * info.pixels_per_point / h as f32;
@@ -196,6 +217,7 @@ impl Filter {
             gl.viewport(0, 0, w as i32, h as i32);
             gl.bind_vertex_array(Some(self.vao));
             gl.use_program(Some(self.program));
+            gl.uniform_1_i32(self.grayscale.as_ref(), i32::from(grayscale));
             if let Some(s) = self.sampler {
                 gl.bind_sampler(0, Some(s));
             }

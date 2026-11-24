@@ -3,7 +3,10 @@ use document_core::{
     AnimationProject, Clip, Document, KeyValue, Layer, Property, Shape, VectorObject,
 };
 use serde_json::{json, Map, Value};
-use std::{collections::HashMap, ops::Bound};
+use std::{
+    collections::{HashMap, HashSet},
+    ops::Bound,
+};
 
 pub fn clip_by_id(project: &AnimationProject, id: u64) -> Result<&Clip, CliError> {
     project
@@ -181,12 +184,20 @@ pub fn page(
         .next()
         .expect("valid clip has a drawing");
     let doc = exposure.drawing;
+    let selected = match query {
+        Query::Selection if selection.len() > 1 => {
+            Some(selection.iter().copied().collect::<HashSet<_>>())
+        }
+        _ => None,
+    };
     let mut objects = Vec::new();
     let mut total = 0;
     for obj in &doc.objects {
         let matches = match query {
             Query::All => true,
-            Query::Selection => selection.contains(&obj.id),
+            Query::Selection => selected
+                .as_ref()
+                .map_or_else(|| selection.contains(&obj.id), |ids| ids.contains(&obj.id)),
             Query::Id { object_id } => *object_id == obj.id,
             Query::Name { name } => *name == obj.name,
         };
@@ -300,7 +311,7 @@ fn keys_at_frame(object: &VectorObject, tick: u32) -> Value {
 fn object_report(exposure: Exposure<'_>, o: &VectorObject, layer: &Layer, tick: u32) -> Value {
     let mut report = object_scope(exposure, o);
     let mut editable = Vec::new();
-    if layer.visible && !layer.locked {
+    if layer.visible && !layer.locked && !o.locked {
         if !Property::Position.is_muted(o) {
             editable.push("position");
         }
@@ -353,6 +364,7 @@ fn object_report(exposure: Exposure<'_>, o: &VectorObject, layer: &Layer, tick: 
     report["base_fill"] = json!(o.fill);
     report["no_fill"] = json!(o.no_fill);
     report["no_stroke"] = json!(o.no_stroke);
+    report["object_locked"] = json!(o.locked);
     report["stroke"] = json!(o.stroke_at(tick));
     report["stroke_width"] = json!(o.stroke_width_at(tick));
     report["visible"] = json!(layer.visible && o.visible_at(tick));

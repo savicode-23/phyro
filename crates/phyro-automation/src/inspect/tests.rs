@@ -123,3 +123,32 @@ fn discovery_tracks_layer_protection_and_animated_fill() {
     let found = lookup(&project, None, Some(1), Some(1), Some(7)).unwrap();
     assert_eq!(found["editable_properties"], json!([]));
 }
+
+#[test]
+fn selection_pages_keep_drawing_order_and_report_individual_locks() {
+    let mut doc = Document::default();
+    let a = doc.add_rectangle([0.; 2], [10.; 2], [255; 4]);
+    let b = doc.add_rectangle([0.; 2], [10.; 2], [255; 4]);
+    let c = doc.add_rectangle([0.; 2], [10.; 2], [255; 4]);
+    doc.objects[1].locked = true;
+    let project = AnimationProject::from_document(doc);
+    let clip = &project.clips[0];
+    let selected = [c, a, b, b];
+    let query = &crate::live::Query::Selection;
+    let first = page(clip, 0, query, &selected, 0, 1).unwrap();
+    assert_eq!(first["total"], 3);
+    assert_eq!(first["objects"][0]["object_id"], a);
+    assert_eq!(first["next_offset"], 1);
+    let next = page(clip, 0, query, &selected, 1, 2).unwrap();
+    let locked = &next["objects"][0];
+    assert_eq!(locked["object_id"], b);
+    assert_eq!(locked["object_locked"], true);
+    assert_eq!(locked["layer_locked"], false);
+    assert_eq!(locked["visible"], true);
+    assert_eq!(locked["editable_properties"], json!([]));
+    assert_eq!(next["objects"][1]["object_id"], c);
+    assert!(next["next_offset"].is_null());
+    let found = lookup(&project, None, Some(b), Some(clip.id), Some(0)).unwrap();
+    assert_eq!(found["object_locked"], true);
+    assert_eq!(found["editable_properties"], json!([]));
+}

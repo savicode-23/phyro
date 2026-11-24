@@ -182,6 +182,7 @@ fn batches_expand_groups_once_per_layer_and_disambiguate_portable_filenames() {
         name: "Foreground".into(),
         locked: true,
         visible: true,
+        blend_mode: Default::default(),
     });
     let ids: Vec<_> = (0..7)
         .map(|i| doc.add_rectangle([-24. + i as f32 * 3., 140.], [3., 3.], [255; 4]))
@@ -400,6 +401,7 @@ fn cancellation_hidden_artwork_and_failed_writes_preserve_existing_assets() {
         name: "Hidden".into(),
         locked: false,
         visible: false,
+        blend_mode: Default::default(),
     });
     doc.objects[1].layer = 2;
     doc.objects[1].name = "Invisible".into();

@@ -1,9 +1,13 @@
 #[cfg(test)]
 use crate::commands::{self, Alignment};
 use crate::timeline::KeyMode;
-pub(crate) use document_core::arrange::{available_units, Action, Reference};
+#[cfg(test)]
+pub(crate) use document_core::arrange::available_units;
+use document_core::arrange::SelectionScope;
+pub(crate) use document_core::arrange::{available_units_in, Action, Reference};
 use document_core::{Document, Property};
 
+#[cfg(test)]
 pub(crate) fn apply(
     doc: &mut Document,
     ids: &[u64],
@@ -11,7 +15,18 @@ pub(crate) fn apply(
     mode: KeyMode,
     action: Action,
 ) -> Result<bool, String> {
-    let updates = document_core::arrange::position_updates(doc, ids, frame, action)?;
+    apply_in(doc, ids, frame, mode, action, SelectionScope::Groups)
+}
+
+pub(crate) fn apply_in(
+    doc: &mut Document,
+    ids: &[u64],
+    frame: u32,
+    mode: KeyMode,
+    action: Action,
+    scope: SelectionScope,
+) -> Result<bool, String> {
+    let updates = document_core::arrange::position_updates_in(doc, ids, frame, action, scope)?;
     if updates
         .iter()
         .any(|(index, _)| !mode.allows(&doc.objects[*index], frame, Property::Position))

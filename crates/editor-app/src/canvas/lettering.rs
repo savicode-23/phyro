@@ -53,7 +53,7 @@ impl Canvas {
         selection: &mut Vec<u64>,
         style: &CanvasStyle,
     ) {
-        if let Some((o, text)) = doc.text_at(point.into(), frame) {
+        if let Some((o, text)) = doc.text_at_in(point.into(), frame, style.group_scope()) {
             *selection = vec![o.id];
             let mut session = PointText::new(
                 Some(o.id),

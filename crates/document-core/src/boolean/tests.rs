@@ -79,6 +79,7 @@ fn sparse_operands_keep_the_back_layer_slot_and_wrap_ids_around_unrelated_art() 
         name: "Cutters".into(),
         visible: true,
         locked: false,
+        blend_mode: Default::default(),
     });
     let cutter = original.add_shape([8., -2.], [4., 16.], [197; 4], Shape::Rectangle, 2);
     let below = original.add_rectangle([90.; 2], [3.; 2], [101; 4]);

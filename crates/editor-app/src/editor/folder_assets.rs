@@ -1,7 +1,7 @@
 use super::{commands, Editor, Tool};
 use crate::canvas::{PlacementPage, PlacementResolution};
 use crate::library::AssetSource;
-use document_core::{AnimationProject, Shape};
+use document_core::{arrange::Group, AnimationProject, Shape};
 use eframe::egui;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -64,6 +64,7 @@ struct Target {
     clip: usize,
     frame: u32,
     layer: u64,
+    group: Option<Group>,
     point: [f32; 2],
     resolution: Option<PlacementResolution>,
 }
@@ -102,6 +103,7 @@ impl Editor {
             clip: self.timeline.clip,
             frame: self.timeline.frame,
             layer: self.style.layer,
+            group: self.style.group_scope().group(),
             point,
             resolution: self.canvas.placement_resolution(ctx),
         };
@@ -154,6 +156,7 @@ impl Editor {
                 if self.timeline.clip != target.clip
                     || self.timeline.frame != target.frame
                     || self.style.layer != target.layer
+                    || self.style.group_scope().group() != target.group
                     || self.project != *target.before
                 {
                     self.report_warning(
@@ -209,6 +212,12 @@ fn prepare_placement(
             id
         }
     };
+    if let Some(group) = target.group {
+        let destination = &mut before.clips[clip];
+        group.add_objects(destination.drawing_at_mut(frame), &[id]);
+        destination.sync_layer_edits(&target.before.clips[clip], frame)?;
+        before.hydrate_composition()?;
+    }
     check_cancel(cancel)?;
     // Check native archive and embedded-image budgets on the worker too, so the
     // next ordinary save can keep everything shown in this placement.

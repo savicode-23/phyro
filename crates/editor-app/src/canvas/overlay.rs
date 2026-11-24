@@ -333,3 +333,57 @@ pub(super) fn close_ring(p: &egui::Painter, start: Pos2) {
     p.circle_stroke(start, 9., (4., Color32::WHITE));
     p.circle_stroke(start, 9., (2., ACCENT));
 }
+pub(super) fn editing_group(
+    painter: &egui::Painter,
+    view: View,
+    doc: &Document,
+    frame: u32,
+    group: document_core::arrange::Group,
+    preview: Option<&document_core::VectorObject>,
+) {
+    let mut bounds = Rect::NOTHING;
+    for object in doc.objects.iter().filter(|o| group.contains(o)) {
+        let object = preview.filter(|o| o.id == object.id).unwrap_or(object);
+        if object.visible_at(frame) {
+            let [left, top, right, bottom] = object.bounds(frame);
+            bounds = bounds.union(Rect::from_min_max(
+                view.screen(egui::pos2(left, top)),
+                view.screen(egui::pos2(right, bottom)),
+            ));
+        }
+    }
+    if !bounds.is_finite() {
+        return;
+    }
+    let bounds = bounds.expand(9.);
+    let clip = painter.clip_rect().expand(2.);
+    let stroke = egui::Stroke::new(1.5_f32, crate::theme::MINT);
+    for y in [bounds.top(), bounds.bottom()] {
+        if (clip.top()..=clip.bottom()).contains(&y) {
+            let left = bounds.left().max(clip.left());
+            let right = bounds.right().min(clip.right());
+            if left < right {
+                painter.extend(egui::Shape::dashed_line(
+                    &[egui::pos2(left, y), egui::pos2(right, y)],
+                    stroke,
+                    5.,
+                    4.,
+                ));
+            }
+        }
+    }
+    for x in [bounds.left(), bounds.right()] {
+        if (clip.left()..=clip.right()).contains(&x) {
+            let top = bounds.top().max(clip.top());
+            let bottom = bounds.bottom().min(clip.bottom());
+            if top < bottom {
+                painter.extend(egui::Shape::dashed_line(
+                    &[egui::pos2(x, top), egui::pos2(x, bottom)],
+                    stroke,
+                    5.,
+                    4.,
+                ));
+            }
+        }
+    }
+}

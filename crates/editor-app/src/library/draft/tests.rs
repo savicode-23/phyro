@@ -150,6 +150,38 @@ fn node_style_shortcuts_edit_the_active_symbol_draft_in_one_step() {
 }
 
 #[test]
+fn simplify_records_smoothing_in_the_symbol_draft() {
+    let mut w = Window::new();
+    let parent = w.project.clone();
+    let drawing = w.draft.temp.clips[0].drawing_at_mut(0);
+    let id = drawing.add_shape(
+        [10., 10.],
+        [100., 100.],
+        [255; 4],
+        Shape::Path {
+            nodes: [[0., 0.4], [0.5, 0.6], [1., 0.4]]
+                .map(document_core::PathNode::corner)
+                .to_vec(),
+            closed: false,
+        },
+        1,
+    );
+    w.draft.selection = vec![id];
+    w.draft.record();
+    let original = w.drawing().clone();
+    let command = Modifiers::COMMAND | Modifiers::CTRL;
+
+    w.key(Key::L, command);
+
+    let shape = &w.drawing().objects.last().unwrap().shape;
+    assert_ne!(shape, &original.objects.last().unwrap().shape);
+    assert_eq!(shape.contours()[0].len(), 3);
+    assert_eq!(w.project, parent);
+    w.key(Key::Z, command);
+    assert_eq!(w.drawing(), &original);
+}
+
+#[test]
 fn delete_in_nodes_mode_edits_only_selected_symbol_nodes_with_local_undo() {
     use document_core::path_edit::{primitive_path, subdivide};
     let mut w = Window::new();

@@ -1,7 +1,7 @@
 use crate::commands::Alignment;
 use crate::editor::arrange::{self, Action, Reference};
 use crate::timeline::KeyMode;
-use document_core::Document;
+use document_core::{arrange::SelectionScope, Document};
 use eframe::egui::{self, Ui};
 use std::sync::Arc;
 
@@ -14,11 +14,11 @@ struct ActionError {
     message: String,
 }
 
-fn units(doc: &Document, ids: &[u64]) -> usize {
+fn units(doc: &Document, ids: &[u64], scope: SelectionScope) -> usize {
     if ids.len() < 2 {
         ids.len()
     } else {
-        arrange::available_units(doc, ids)
+        arrange::available_units_in(doc, ids, scope)
     }
 }
 
@@ -156,14 +156,26 @@ fn actions(ui: &mut Ui, count: usize, menu: bool, reference: Reference) -> Optio
     chosen
 }
 
-pub(crate) fn menu(ui: &mut Ui, doc: &Document, ids: &[u64]) -> Option<Action> {
-    let count = units(doc, ids);
+pub(crate) fn menu(
+    ui: &mut Ui,
+    doc: &Document,
+    ids: &[u64],
+    scope: SelectionScope,
+) -> Option<Action> {
+    let count = units(doc, ids, scope);
     let reference = reference_picker(ui);
     actions(ui, count, true, reference)
 }
 
-pub(super) fn panel(ui: &mut Ui, doc: &mut Document, ids: &[u64], frame: u32, mode: KeyMode) {
-    let count = units(doc, ids);
+pub(super) fn panel(
+    ui: &mut Ui,
+    doc: &mut Arc<Document>,
+    ids: &[u64],
+    frame: u32,
+    mode: KeyMode,
+    scope: SelectionScope,
+) {
+    let count = units(doc, ids, scope);
     let reference = if count < 2 {
         ui.horizontal_wrapped(|ui| {
             ui.label("Relative to");
@@ -175,7 +187,7 @@ pub(super) fn panel(ui: &mut Ui, doc: &mut Document, ids: &[u64], frame: u32, mo
     };
     let status = ui.make_persistent_id("arrange-error");
     if let Some(action) = actions(ui, count, false, reference) {
-        let result = arrange::apply(doc, ids, frame, mode, action);
+        let result = arrange::apply_in(Arc::make_mut(doc), ids, frame, mode, action, scope);
         ui.data_mut(|d| match result {
             Ok(_) => d.remove::<ActionError>(status),
             Err(message) => d.insert_temp(

@@ -41,6 +41,7 @@ fn scene() -> (Arc<Document>, usize) {
         name: "Cutter".into(),
         visible: true,
         locked: false,
+        blend_mode: Default::default(),
     });
     document.add_shape(
         [40.2, 37.1],

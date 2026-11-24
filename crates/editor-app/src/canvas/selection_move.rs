@@ -8,6 +8,8 @@ use std::sync::{
     mpsc, Arc,
 };
 
+const HELD_UPLOAD_BYTES: usize = 8 * 1024 * 1024;
+
 #[derive(Default)]
 pub(super) struct SelectionMove {
     release: release::Release,
@@ -37,9 +39,21 @@ struct Layer {
 
 type Captures = Vec<(bool, renderer::MoveSprite)>;
 
-impl Layer {
-    fn upload(ctx: &egui::Context, layers: Captures) -> Vec<Self> {
-        layers
+struct LayerImage {
+    moving: bool,
+    rect: Rect,
+    pixels: egui::ColorImage,
+}
+
+struct PreparedLayers {
+    images: Vec<LayerImage>,
+    bytes: usize,
+}
+
+impl PreparedLayers {
+    fn new(captures: Captures) -> Self {
+        let mut bytes = 0;
+        let images = captures
             .into_iter()
             .map(|(moving, sprite)| {
                 let size = [
@@ -50,8 +64,26 @@ impl Layer {
                     Pos2::from(sprite.origin),
                     egui::vec2(size[0] as f32, size[1] as f32) / sprite.scale,
                 );
-                let color = egui::ColorImage::from_rgba_premultiplied(size, sprite.pixels.data());
-                Self {
+                bytes += sprite.pixels.data().len();
+                LayerImage {
+                    moving,
+                    rect,
+                    pixels: egui::ColorImage::from_rgba_premultiplied(size, sprite.pixels.data()),
+                }
+            })
+            .collect();
+        Self { images, bytes }
+    }
+
+    fn upload(self, ctx: &egui::Context) -> Vec<Layer> {
+        self.images
+            .into_iter()
+            .map(
+                |LayerImage {
+                     moving,
+                     rect,
+                     pixels,
+                 }| Layer {
                     moving,
                     corners: [
                         rect.left_top(),
@@ -61,17 +93,18 @@ impl Layer {
                     ],
                     texture: ctx.load_texture(
                         "selection transform",
-                        color,
+                        pixels,
                         display_filter::ARTWORK_TEXTURE,
                     ),
-                }
-            })
+                },
+            )
             .collect()
     }
 }
 
 struct Job {
-    receiver: mpsc::Receiver<Option<Captures>>,
+    receiver: mpsc::Receiver<Option<PreparedLayers>>,
+    ready: Option<PreparedLayers>,
     cancel: Arc<AtomicBool>,
 }
 
@@ -88,7 +121,9 @@ impl SelectionMove {
         self.layers = None;
         if let Some(job) = &self.job {
             job.cancel.store(true, Ordering::Relaxed);
-            if !matches!(job.receiver.try_recv(), Err(mpsc::TryRecvError::Empty)) {
+            if job.ready.is_some()
+                || !matches!(job.receiver.try_recv(), Err(mpsc::TryRecvError::Empty))
+            {
                 self.job = None;
             }
         }
@@ -101,7 +136,7 @@ impl SelectionMove {
         ids: &[u64],
         frame: u32,
         (density, visible): (f32, Rect),
-        publish: bool,
+        idle: bool,
     ) {
         if self.request.as_ref().is_some_and(|r| {
             r.frame != frame
@@ -112,27 +147,7 @@ impl SelectionMove {
         }) {
             self.reset();
         }
-        // Once an interim pose is under the pointer, a large upload can take
-        // longer than the complete gesture update. Its exact replacement can
-        // be published when idle. Canceled work can always be drained.
-        if let Some(job) = self
-            .job
-            .as_ref()
-            .filter(|job| publish || job.cancel.load(Ordering::Relaxed))
-        {
-            match job.receiver.try_recv() {
-                Ok(result) => {
-                    if !job.cancel.load(Ordering::Relaxed) {
-                        if let Some(images) = result {
-                            self.layers = Some(Layer::upload(ctx, images));
-                        }
-                    }
-                    self.job = None;
-                }
-                Err(mpsc::TryRecvError::Empty) => {}
-                Err(mpsc::TryRecvError::Disconnected) => self.job = None,
-            }
-        }
+        self.publish_layers(ctx, idle);
         if ids.len() < 2 {
             return;
         }
@@ -140,7 +155,7 @@ impl SelectionMove {
             // Capturing the static artwork visits the whole paint stack. A
             // small marquee on a dense sheet often only changes selection;
             // leave release and idle cheap until the artist grabs a handle.
-            if publish && source.objects.len() >= 1024 && ids.len() <= 32 {
+            if idle && source.objects.len() >= 1024 && ids.len() <= 32 {
                 return;
             }
             let mut selected = ids.to_vec();
@@ -209,17 +224,54 @@ impl SelectionMove {
                     area,
                     renderer::MAX_SPRITE_EDGE,
                     &stop,
-                );
-                let _ = sender.send(if stop.load(Ordering::Relaxed) {
-                    None
-                } else {
-                    images
-                });
+                )
+                .filter(|_| !stop.load(Ordering::Relaxed))
+                .map(PreparedLayers::new);
+                let _ = sender.send(images);
                 wake.request_repaint_of(viewport);
             })
             .is_ok()
         {
-            self.job = Some(Job { receiver, cancel });
+            self.job = Some(Job {
+                receiver,
+                ready: None,
+                cancel,
+            });
+        }
+    }
+
+    fn publish_layers(&mut self, ctx: &egui::Context, idle: bool) {
+        // Keep first movement on the bounded interim path. Once its layers are
+        // visible, a modest upload can sharpen the held pose without rasterizing
+        // or converting pixels on the UI thread. Defer larger uploads until idle.
+        let Some(job) = self.job.as_mut() else { return };
+        if job.cancel.load(Ordering::Relaxed) {
+            if job.ready.is_some()
+                || !matches!(job.receiver.try_recv(), Err(mpsc::TryRecvError::Empty))
+            {
+                self.job = None;
+            }
+            return;
+        }
+        if !idle && self.layers.is_none() {
+            return;
+        }
+        if job.ready.is_none() {
+            match job.receiver.try_recv() {
+                Ok(Some(images)) => job.ready = Some(images),
+                Err(mpsc::TryRecvError::Empty) => return,
+                Ok(None) | Err(mpsc::TryRecvError::Disconnected) => {
+                    self.job = None;
+                    return;
+                }
+            }
+        }
+        if idle || job.ready.as_ref().unwrap().bytes <= HELD_UPLOAD_BYTES {
+            self.layers = Some(job.ready.take().unwrap().upload(ctx));
+            self.job = None;
+            if let Some(request) = &mut self.request {
+                request.tried_coarse = false;
+            }
         }
     }
 
@@ -247,7 +299,11 @@ impl SelectionMove {
                 EDGE,
                 &AtomicBool::new(false),
             ) {
-                self.layers = Some(Layer::upload(ctx, layers));
+                self.layers = Some(PreparedLayers::new(layers).upload(ctx));
+                // The worker may have finished before the first pointer movement.
+                if self.job.is_some() {
+                    ctx.request_repaint();
+                }
             }
         }
         self.images(posed, view)
@@ -345,6 +401,9 @@ fn capture(
     max_edge: u32,
     stop: &AtomicBool,
 ) -> Option<Captures> {
+    if renderer::requires_scene_compositing(doc) {
+        return None;
+    }
     let objects = doc.paint_order();
     let moving = |o: &document_core::VectorObject| ids.binary_search(&o.id).is_ok();
     if objects

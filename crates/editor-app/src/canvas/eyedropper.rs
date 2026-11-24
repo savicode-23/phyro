@@ -115,7 +115,8 @@ impl PaintSample {
         };
         let mut changed = false;
         for object in doc.objects.iter_mut().filter(|o| {
-            selected.contains(&o.id)
+            !o.locked
+                && selected.contains(&o.id)
                 && layers.contains(&o.layer)
                 && crate::commands::has_vector_paint(o)
         }) {
@@ -234,12 +235,14 @@ mod tests {
         let mut doc = Document::default();
         let first = doc.add_rectangle([0.; 2], [18.; 2], [55; 4]);
         let other = doc.add_rectangle([22.; 2], [18.; 2], [22; 4]);
+        let locked_object = doc.add_rectangle([44.; 2], [18.; 2], [33; 4]);
         doc.layers.push(Layer {
             id: 2,
             locked: true,
             ..Default::default()
         });
         doc.objects[1].layer = 2;
+        doc.objects[2].locked = true;
         doc.objects[0]
             .animated
             .fill_keys
@@ -261,6 +264,7 @@ mod tests {
             ],
         });
         let mut style = CanvasStyle {
+            group_edit: None,
             fill: [0; 4],
             gradient: None,
             stroke_gradient: None,
@@ -281,15 +285,17 @@ mod tests {
             stroke: false,
         };
         doc.objects[0].no_fill = true;
-        assert!(!sample.apply_to_selection(&mut doc, &[first, other], 4, &style));
+        let selection = [first, other, locked_object];
+        assert!(!sample.apply_to_selection(&mut doc, &selection, 4, &style));
         assert!(doc.objects[0].no_fill && doc.objects[0].gradient.is_some());
         style.key_mode = KeyMode::Tracked;
-        assert!(sample.apply_to_selection(&mut doc, &[first, other], 4, &style));
+        assert!(sample.apply_to_selection(&mut doc, &selection, 4, &style));
         assert!(!doc.objects[0].no_fill && doc.objects[0].gradient.is_none());
         assert_eq!(doc.objects[0].fill_at(0), [50; 4]);
         assert_eq!(doc.objects[0].fill_at(4), sample.color);
         assert_eq!(doc.objects[0].fill_at(8), [210; 4]);
         assert_eq!(doc.objects[1].fill_at(4), [22; 4]);
+        assert_eq!(doc.objects[2].fill_at(4), [33; 4]);
 
         let gradient = Gradient::from_color(
             GradientKind::Linear {

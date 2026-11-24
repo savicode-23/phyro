@@ -1,6 +1,7 @@
 use crate::keymap::{self, Action, Keymap};
 use document_core::{BooleanOp, Document};
 use eframe::egui::{self, Key, Modifiers, Ui};
+use std::sync::Arc;
 #[cfg(windows)]
 mod windows_layout;
 
@@ -156,14 +157,14 @@ pub fn choose(ui: &mut Ui, selection_count: usize, menu: bool) -> Option<Boolean
     chosen
 }
 
-pub fn show(ui: &mut Ui, doc: &mut Document, selected: &mut Vec<u64>, frame: u32) {
+pub fn show(ui: &mut Ui, doc: &mut Arc<Document>, selected: &mut Vec<u64>, frame: u32) {
     ui.collapsing("Path operations", |ui| {
         let status = ui.make_persistent_id("boolean-status");
         if let Some(op) = ui
             .horizontal_wrapped(|ui| choose(ui, selected.len(), false))
             .inner
         {
-            match doc.boolean(selected, frame, op) {
+            match Arc::make_mut(doc).boolean(selected, frame, op) {
                 Ok(ids) => {
                     *selected = ids;
                     ui.data_mut(|d| d.remove::<String>(status));

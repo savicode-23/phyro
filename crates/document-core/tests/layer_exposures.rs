@@ -147,6 +147,47 @@ fn editing_held_background_reuses_a_snapshot_across_a_thousand_matching_exposure
 }
 
 #[test]
+fn timing_edits_keep_shared_composites_and_sampled_poses() {
+    let mut clip = scene();
+    clip.drawing_at_mut(0).objects[0]
+        .keys
+        .extend([(0, [0.; 2]), (80, [80., 160.])]);
+    for frame in 1..100 {
+        clip.duplicate_layer_frame(frame, 2).unwrap();
+    }
+    let before = clip.clone();
+    let position = |clip: &Clip, tick| clip.drawing_at(tick).objects[0].position_at(tick);
+
+    clip.set_fps(30).unwrap();
+    assert!(clip
+        .cels
+        .values()
+        .all(|doc| Arc::ptr_eq(doc, &clip.cels[&0])));
+    assert_eq!(before.drawing_at(40).fps, 12);
+    assert_eq!(clip.drawing_at(40).fps, 30);
+
+    clip.set_exposure(2, 3).unwrap();
+    assert!(clip
+        .cels
+        .values()
+        .all(|doc| Arc::ptr_eq(doc, &clip.cels[&0])));
+    assert_eq!(clip.layer_exposure(2, 2), (2, 3));
+    assert_eq!(position(&clip, 72), position(&before, 70));
+    assert_eq!(before.drawing_at(40).frames, 1000);
+
+    let stretched = clip.clone();
+    assert_eq!(clip.duplicate_range(10, 39).unwrap(), 40);
+    assert_eq!(clip.cels.range(40..70).count(), 30);
+    assert!(clip
+        .cels
+        .range(40..70)
+        .all(|(_, doc)| Arc::ptr_eq(doc, &clip.cels[&40])));
+    assert_eq!(position(&clip, 59), position(&stretched, 29));
+    assert_eq!(position(&clip, 102), position(&stretched, 72));
+    clip.validate().unwrap();
+}
+
+#[test]
 fn a_shared_nested_placement_keeps_its_keys_across_effects_on_the_same_layer() {
     let mut project = AnimationProject::from_document(scene().drawing_at(0).clone());
     let child = project.add_clip("Character").unwrap();
@@ -186,6 +227,7 @@ fn layer_structure_follows_a_family_of_held_drawings() {
     let doc = clip.drawing_at_mut(12);
     doc.layers[1].name = "New effects name".into();
     doc.layers[1].visible = false;
+    doc.layers[1].blend_mode = document_core::BlendMode::Screen;
     doc.layers.push(Layer {
         id: 3,
         name: "Weather".into(),
@@ -199,6 +241,10 @@ fn layer_structure_follows_a_family_of_held_drawings() {
     for frame in [0, 10, 20] {
         assert_eq!(clip.drawing_at(frame).layers[1].name, "New effects name");
         assert!(!clip.drawing_at(frame).layers[1].visible);
+        assert_eq!(
+            clip.drawing_at(frame).layers[1].blend_mode,
+            document_core::BlendMode::Screen
+        );
         assert_eq!(ink(&clip, frame, 3)[0].0, new);
     }
     assert!(clip.blank_layer_frame(13, 2).is_err());

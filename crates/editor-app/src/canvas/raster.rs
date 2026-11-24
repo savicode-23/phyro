@@ -107,22 +107,15 @@ impl FrameTexture {
                 || self.document.as_ref() == document)
     }
 
-    fn patch(
-        &mut self,
-        document: &Document,
-        preview: Option<&Arc<Document>>,
-        frame: u32,
-    ) -> Result<bool, String> {
+    fn patch(&mut self, document: &Arc<Document>, frame: u32) -> Result<bool, String> {
         if self.frame != frame {
             return Ok(false);
         }
-        if self.document.as_ref() == document {
+        if Arc::ptr_eq(&self.document, document) || self.document.as_ref() == document.as_ref() {
             return Ok(true);
         }
-        let mut snapshot = preview.cloned();
         let prepared = if let Some(backdrop) = self.backdrop.as_mut() {
-            let after = snapshot.get_or_insert_with(|| Arc::new(document.clone()));
-            backdrop.patch(&self.document, after, frame, self.scale)?
+            backdrop.patch(&self.document, document, frame, self.scale)?
         } else {
             None
         };
@@ -150,7 +143,7 @@ impl FrameTexture {
                 self.handle.set_partial(origin, patch, ARTWORK_TEXTURE);
             }
         }
-        self.document = snapshot.unwrap_or_else(|| Arc::new(document.clone()));
+        self.document = Arc::clone(document);
         self.frame_independent = Default::default();
         Ok(true)
     }
@@ -486,18 +479,20 @@ impl Canvas {
         frame: u32,
         scale: f32,
     ) -> Result<egui::TextureId, String> {
-        self.artwork_texture(ctx, document, frame, scale, None)
+        self.artwork_texture(ctx, &Arc::new(document.clone()), frame, scale, None)
     }
 
     pub(super) fn artwork_texture(
         &mut self,
         ctx: &egui::Context,
-        original: &Document,
+        original: &Arc<Document>,
         frame: u32,
         scale: f32,
         preview: Option<&Arc<Document>>,
     ) -> Result<egui::TextureId, String> {
-        let document = preview.map_or(original, Arc::as_ref);
+        let document = preview.unwrap_or(original);
+        let settling_drag = preview.is_none()
+            && (self.patching_drag || self.drag_preview.is_some() && self.page_drag.is_none());
         if preview.is_some() {
             self.page_drag = None;
         }
@@ -508,7 +503,7 @@ impl Canvas {
                 preview.is_some()
                     || cached.frame != frame
                     || cached.scale != scale && cached.failed_refinement.is_none()
-                    || target.as_ref() != document
+                    || (!Arc::ptr_eq(target, document) && target.as_ref() != document.as_ref())
             });
             if split_changed {
                 cached.pending_split = None;
@@ -529,7 +524,7 @@ impl Canvas {
             && (self.patching_drag || preview.is_some() && dense_artboard(document))
         {
             if let Some(cached) = self.texture.as_mut() {
-                if cached.patch(document, preview, frame)? {
+                if cached.patch(document, frame)? {
                     self.patching_drag = preview.is_some();
                     if self.patching_drag {
                         return Ok(cached.handle.id());
@@ -570,6 +565,15 @@ impl Canvas {
             }
             let recovering = cached.failed_refinement.is_some();
             if cached.scale == scale && cached.pending_split.is_none() {
+                if settling_drag
+                    && self.refinement.is_none()
+                    && cached.backdrop.is_none()
+                    && !Arc::ptr_eq(&cached.document, document)
+                {
+                    // A committed pose can equal the last staged pose byte for
+                    // byte. Keep the same texture and share the committed drawing.
+                    cached.document = Arc::clone(document);
+                }
                 if recovering {
                     cached.failed_refinement = None;
                     ctx.request_repaint();
@@ -611,38 +615,17 @@ impl Canvas {
         // First display, content edits and timeline changes are visible in this frame.
         // The cached image already has this frame and density. Local committed
         // edits, including inserted or deleted artwork and Undo/Redo, can update it in place.
-        let lettering = self
-            .point_text
-            .as_ref()
-            .and_then(|session| session.preview())
-            .filter(|snapshot| std::ptr::eq(snapshot.as_ref(), document));
         if preview.is_none() {
             if let Some(cached) = self
                 .texture
                 .as_mut()
                 .filter(|c| c.frame == frame && c.scale == scale)
             {
-                if dense_artboard(document) && cached.patch(document, lettering, frame)? {
+                if dense_artboard(document) && cached.patch(document, frame)? {
                     return Ok(cached.handle.id());
                 }
             }
         }
-        let snapshot = preview
-            .or(lettering)
-            .or_else(|| {
-                // An animated drawing needs new pixels at each tick, but its
-                // immutable artwork and key tracks can be shared across ticks.
-                self.texture
-                    .as_ref()
-                    .filter(|cached| {
-                        cached.frame != frame
-                            && cached.frame_independent.get() == Some(&false)
-                            && cached.document.as_ref() == document
-                    })
-                    .map(|cached| &cached.document)
-            })
-            .cloned()
-            .unwrap_or_else(|| Arc::new(document.clone()));
         let (image, backdrop) = match preview {
             Some(_) => {
                 let scene = self.drag_preview.get_or_insert_with(Default::default);
@@ -670,9 +653,9 @@ impl Canvas {
                 };
                 (color_image(pixels), None)
             }
-            None => render_image(&snapshot, frame, scale)?,
+            None => render_image(document, frame, scale)?,
         };
-        let id = self.upload_page(ctx, snapshot, frame, scale, (image, backdrop));
+        let id = self.upload_page(ctx, Arc::clone(document), frame, scale, (image, backdrop));
         if settled {
             self.sharpen_at = None;
         }
@@ -713,7 +696,7 @@ impl Canvas {
     fn finish_drag_texture(
         &mut self,
         ctx: &egui::Context,
-        document: &Document,
+        document: &Arc<Document>,
         frame: u32,
         scale: f32,
     ) -> Result<(), String> {
@@ -734,7 +717,9 @@ impl Canvas {
         }
         // A release may carry a new position, and Escape restores the original
         // geometry. Show those pixels now at drag density, then sharpen off-thread.
-        if texture.document.as_ref() != document {
+        if !Arc::ptr_eq(&texture.document, document)
+            && texture.document.as_ref() != document.as_ref()
+        {
             let pixels = if let Some(page) = &page_drag {
                 drag.render_from_snapshot(&page.source, document, frame, drag_scale)?
             } else {
@@ -742,7 +727,7 @@ impl Canvas {
             };
             let image = color_image(pixels);
             texture.upload(image);
-            texture.document = Arc::new(document.clone());
+            texture.document = Arc::clone(document);
             texture.frame_independent = Default::default();
             texture.scale = drag_scale;
             texture.backdrop = None;

@@ -34,7 +34,7 @@ pub(crate) fn stencil_intersection_bounds(
     rule: crate::FillRule,
     masks: &[(tiny_skia_path::Path, crate::FillRule)],
 ) -> Result<Option<[f32; 4]>, String> {
-    let mut budget = 4096;
+    let mut budget = flatten::MAX_INPUT_POINTS;
     let mut inputs = vec![flatten::contours(outline, &mut budget)?];
     let mut rules = vec![rule];
     for (mask, mask_rule) in masks {
@@ -113,7 +113,7 @@ impl Document {
         }
         let mut inputs = Vec::with_capacity(objects.len());
         let mut outlines = Vec::new();
-        let mut remaining = 4096;
+        let mut remaining = flatten::MAX_INPUT_POINTS;
         let keep_outlines = objects.len() <= curves::MAX_CONTOURS;
         for obj in &objects {
             let outline = obj

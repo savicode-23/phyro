@@ -1,8 +1,10 @@
 //! Commands on the original cubic nodes. All indices refer to authored path order.
 use crate::{path_effects::lerp, PathNode, Shape};
 mod continuation;
+mod simplify;
 mod stroke;
 pub use continuation::PathEnd;
+pub use simplify::{can_simplify_path, simplify_paths};
 pub use stroke::{has_convertible_stroke, stroke_to_paths};
 
 impl crate::Document {

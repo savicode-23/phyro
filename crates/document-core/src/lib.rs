@@ -8,6 +8,8 @@ pub mod animation;
 pub mod arrange;
 pub mod boolean;
 pub use boolean::BooleanOp;
+mod blend;
+pub use blend::BlendMode;
 mod composition;
 pub use composition::{ClipInstance, ClipTiming, LoopMode};
 mod symbols;
@@ -54,6 +56,7 @@ pub const MAX_FPS: u32 = 240;
 pub const MAX_PATH_NODES: usize = 65_536;
 /// Maximum number of normalized distance/width samples on a Pencil stroke.
 pub const MAX_STROKE_SAMPLES: usize = 256;
+const MAX_OBJECT_NAME_CHARS: usize = 80;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -168,6 +171,9 @@ impl Document {
             size,
             pivot: None,
             fill,
+            fill_blend_mode: BlendMode::Normal,
+            stroke_blend_mode: BlendMode::Normal,
+            blend_mode: BlendMode::Normal,
             no_fill: false,
             no_stroke: false,
             fill_rule: FillRule::default(),
@@ -226,7 +232,16 @@ impl Document {
 
     /// The frontmost editable object painted at the artboard point.
     pub fn hit_test(&self, point: [f32; 2], frame: u32) -> Option<u64> {
-        self.hit_test_with(|obj| obj.contains(point, frame))
+        self.hit_test_in(point, frame, arrange::SelectionScope::Groups)
+    }
+
+    pub fn hit_test_in(
+        &self,
+        point: [f32; 2],
+        frame: u32,
+        scope: arrange::SelectionScope,
+    ) -> Option<u64> {
+        self.hit_test_with(|obj| scope.contains(obj) && obj.contains(point, frame))
             .map(|obj| obj.id)
     }
 
@@ -237,17 +252,27 @@ impl Document {
         point: [f32; 2],
         frame: u32,
     ) -> Option<(&VectorObject, &typography::TextStyle)> {
+        self.text_at_in(point, frame, arrange::SelectionScope::Groups)
+    }
+
+    pub fn text_at_in(
+        &self,
+        point: [f32; 2],
+        frame: u32,
+        scope: arrange::SelectionScope,
+    ) -> Option<(&VectorObject, &typography::TextStyle)> {
         self.hit_test_with(|obj| {
-            obj.text.is_some()
-                && obj.visible_at(frame)
-                && obj.opacity_at(frame) > 0.
-                && obj
-                    .world_to_local(point, frame)
-                    .iter()
-                    .all(|v| (0.0..=1.0).contains(v))
-                && obj.stencil_contains(point, frame)
-                && (obj.fill_visible_at(point, frame) || obj.stroke_visible_at(point, frame))
-                || obj.contains(point, frame)
+            scope.contains(obj)
+                && (obj.text.is_some()
+                    && obj.visible_at(frame)
+                    && obj.opacity_at(frame) > 0.
+                    && obj
+                        .world_to_local(point, frame)
+                        .iter()
+                        .all(|v| (0.0..=1.0).contains(v))
+                    && obj.stencil_contains(point, frame)
+                    && (obj.fill_visible_at(point, frame) || obj.stroke_visible_at(point, frame))
+                    || obj.contains(point, frame))
         })
         .and_then(|obj| Some((obj, obj.text.as_ref()?)))
     }
@@ -305,7 +330,9 @@ impl Document {
         let mut clip_sources = HashSet::new();
         let mut group_names = HashMap::new();
         for object in &self.objects {
-            if object.name.chars().count() > 80 || object.name.chars().any(char::is_control) {
+            if object.name.chars().count() > MAX_OBJECT_NAME_CHARS
+                || object.name.chars().any(char::is_control)
+            {
                 return Err("Object names can contain up to 80 printable characters.".into());
             }
             if object
@@ -455,6 +482,8 @@ pub struct Layer {
     pub name: String,
     pub visible: bool,
     pub locked: bool,
+    #[serde(default, skip_serializing_if = "BlendMode::is_normal")]
+    pub blend_mode: BlendMode,
 }
 
 impl Default for Layer {
@@ -464,6 +493,7 @@ impl Default for Layer {
             name: "Layer 1".into(),
             visible: true,
             locked: false,
+            blend_mode: BlendMode::Normal,
         }
     }
 }
@@ -626,6 +656,10 @@ pub struct VectorObject {
     pub pivot: Option<[f32; 2]>,
     /// Unpremultiplied red, green, blue, alpha.
     pub fill: [u8; 4],
+    #[serde(default, skip_serializing_if = "BlendMode::is_normal")]
+    pub fill_blend_mode: BlendMode,
+    #[serde(default, skip_serializing_if = "BlendMode::is_normal")]
+    pub stroke_blend_mode: BlendMode,
     /// Disable vector fill paint, retaining authored colors and animation keys.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub no_fill: bool,
@@ -654,6 +688,8 @@ pub struct VectorObject {
     pub scale: [f32; 2],
     #[serde(default = "opaque", skip_serializing_if = "is_opaque")]
     pub opacity: f32,
+    #[serde(default, skip_serializing_if = "BlendMode::is_normal")]
+    pub blend_mode: BlendMode,
     #[serde(default, skip_serializing_if = "is_linear")]
     pub interpolation: Interpolation,
     #[serde(default, skip_serializing_if = "AnimatedProperties::is_default")]
@@ -705,6 +741,12 @@ pub struct VectorObject {
 pub type Rectangle = VectorObject;
 
 impl VectorObject {
+    pub fn uses_blending(&self) -> bool {
+        !self.blend_mode.is_normal()
+            || !self.fill_blend_mode.is_normal()
+            || !self.stroke_blend_mode.is_normal()
+    }
+
     pub fn display_name(&self) -> String {
         if self.name.trim().is_empty() {
             format!("{} {}", self.kind_name(), self.id)

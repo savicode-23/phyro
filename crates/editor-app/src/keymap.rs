@@ -55,6 +55,9 @@ catalog! {
         Deselect: "Deselect" => [Escape(NONE)],
         Align: "Align and distribute" => [A(PRIMARY | SHIFT)],
     }
+    "View" {
+        Grayscale: "Toggle grayscale preview" => [G(SHIFT)],
+    }
     "Tools" {
         SelectTool: "Select tool" => [S(NONE), F1(NONE)],
         NodeTool: "Nodes tool" => [N(NONE), F2(NONE)],
@@ -85,6 +88,7 @@ catalog! {
         CutPath: "Cut path" => [Slash(PRIMARY | ALT), Slash(PRIMARY | ALT | SHIFT)],
         ConvertToPath: "Convert to path" => [C(PRIMARY | SHIFT)],
         StrokeToPath: "Stroke to path" => [C(PRIMARY | ALT)],
+        SimplifyPath: "Simplify" => [L(PRIMARY)],
         CombineNodes: "Combine selected nodes" => [J(SHIFT)],
         Corner: "Make nodes corner" => [C(SHIFT)],
         Smooth: "Make nodes smooth" => [S(SHIFT)],
@@ -248,6 +252,18 @@ impl<'de> Deserialize<'de> for Keymap {
                 if binding.is_none_or(|chord| chord.check_reserved(action).is_ok()) {
                     map.overrides.insert(action, binding);
                 }
+            }
+        }
+        // These defaults were added after users could already bind their keys.
+        for action in [Action::SimplifyPath, Action::Grayscale] {
+            if map.is_default(action)
+                && map
+                    .overrides
+                    .values()
+                    .flatten()
+                    .any(|chord| action.defaults().contains(chord))
+            {
+                map.clear(action);
             }
         }
         // Resolve invalid hand-edited conflicts deterministically. A restored

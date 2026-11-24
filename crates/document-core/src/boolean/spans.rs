@@ -45,7 +45,11 @@ struct ClippedSpan {
 // Only nearby chords get entries. A missing entry is clear, while None
 // means that several other boundaries approached this chord.
 type Contacts = HashMap<Edge, Option<Edge>>;
-fn contacts(contours: &[&Contour], margin: i64) -> Contacts {
+fn contacts(contours: &[&Contour], margin: i64) -> Option<Contacts> {
+    // Up to the previous 2,000-chord worst case. Ordinary curves spread
+    // their short chords across X and need far fewer candidate comparisons.
+    const MAX_COMPARISONS: usize = 2_000_000;
+    let mut comparisons_left = MAX_COMPARISONS;
     let mut chords: Vec<_> = contours
         .iter()
         .enumerate()
@@ -74,13 +78,14 @@ fn contacts(contours: &[&Contour], margin: i64) -> Contacts {
             .iter()
             .take_while(|(_, c)| c.left() <= first.right() + margin)
         {
+            comparisons_left = comparisons_left.checked_sub(1)?;
             if owner != other && first.near(*second, margin) {
                 record(first.edge, second.edge);
                 record(second.edge, first.edge);
             }
         }
     }
-    result
+    Some(result)
 }
 #[derive(Default)]
 pub(super) struct CurveSpans<'a> {
@@ -107,11 +112,7 @@ impl<'a> CurveSpans<'a> {
             return None;
         }
         let contours: Vec<_> = inputs.iter().flatten().collect();
-        // Clearance checks can compare every source chord to every other.
-        // Keep expensive or uncertified geometry on the existing polygon path.
-        if contours.len() > curves::MAX_CONTOURS
-            || contours.iter().map(|c| c.points.len()).sum::<usize>() > 2000
-        {
+        if contours.len() > curves::MAX_CONTOURS {
             return None;
         }
         let mut result = Self {
@@ -134,15 +135,21 @@ impl<'a> CurveSpans<'a> {
         let margin =
             (2. * flatten::TOLERANCE * GRID + 2. + 32. * f64::from(f32::EPSILON) * max as f64)
                 .ceil() as i64;
-        let neighbors = contacts(&result.contours, margin);
+        let neighbors = contacts(&result.contours, margin)?;
         for (path, input) in outlines.iter().zip(inputs) {
             result.record_straight_edges(path, input);
-            if !curves::filled_nodes(path, input)
-                .is_some_and(|contours| contours.iter().all(|nodes| curves::simple(nodes)))
-            {
+            let Some(contours) = curves::filled_nodes(path, input) else {
                 continue;
-            }
-            result.trace_path(path, &neighbors)?;
+            };
+            let mut contours = contours.into_iter();
+            result.trace_path(path, &neighbors, || {
+                contours.next().is_some_and(|nodes| {
+                    nodes
+                        .iter()
+                        .any(|n| n.point != n.incoming || n.point != n.outgoing)
+                        && curves::simple(&nodes)
+                })
+            })?;
         }
         Some(result)
     }
@@ -186,10 +193,22 @@ impl<'a> CurveSpans<'a> {
         }
     }
 
-    fn trace_path(&mut self, path: &Path, neighbors: &Contacts) -> Option<()> {
+    fn trace_path(
+        &mut self,
+        path: &Path,
+        neighbors: &Contacts,
+        mut trace_next_contour: impl FnMut() -> bool,
+    ) -> Option<()> {
         let coord = |p: tiny_skia_path::Point| [f64::from(p.x), f64::from(p.y)];
         let mut previous = [0.; 2];
+        let mut enabled = false;
         for segment in path.segments() {
+            if matches!(segment, PathSegment::MoveTo(_)) {
+                enabled = trace_next_contour();
+            }
+            if !enabled {
+                continue;
+            }
             let controls = match segment {
                 PathSegment::MoveTo(p) | PathSegment::LineTo(p) => {
                     previous = coord(p);
@@ -347,7 +366,7 @@ impl<'a> CurveSpans<'a> {
             }
         }
         let mut spans = Self::default();
-        spans.trace_path(path, &repeated)?;
+        spans.trace_path(path, &repeated, || true)?;
         Some(spans)
     }
 
@@ -430,5 +449,19 @@ impl<'a> CurveSpans<'a> {
             nodes.push(last);
         }
         (!closed || nodes.len() >= 3 && nodes.len() < n).then_some(nodes)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_crowded_clearance_sweep_falls_back_instead_of_certifying_partial_contacts() {
+        let crowded = Contour {
+            points: (0..2500).map(|y| [0, y]).collect(),
+            closed: true,
+        };
+        assert!(contacts(&[&crowded], 0).is_none());
     }
 }

@@ -1,6 +1,6 @@
 use super::{INKSCAPE_NS, SVG_NS};
 use crate::{invalid, write_file, WriteMode};
-use document_core::{Document, Layer, LineCap, LineJoin, Shape, VectorObject};
+use document_core::{BlendMode, Document, Layer, LineCap, LineJoin, Shape, VectorObject};
 use std::io::{self, Write};
 use std::path::Path;
 
@@ -52,7 +52,12 @@ pub(crate) fn encode_objects(
     header(&mut svg, origin, size)?;
     let mut runs = objects.chunk_by(|a, b| a.layer == b.layer).peekable();
     if let Some(first) = runs.next() {
-        if runs.peek().is_none() {
+        if runs.peek().is_none()
+            && layers
+                .iter()
+                .find(|l| l.id == first[0].layer)
+                .is_none_or(|l| l.blend_mode.is_normal())
+        {
             write_objects(&mut svg, first.iter().copied(), frame, "phyro")?;
         } else {
             // Group IDs are local to each layer. Keep their scopes and paint order
@@ -82,11 +87,13 @@ fn write_layer<'a>(
         r#" display="none""#
     };
     let name = escape_attribute(&layer.name)?;
-    writeln!(
+    write!(
         out,
-        r#"  <g inkscape:groupmode="layer" inkscape:label="{name}" data-phyro-locked="{}"{visible}>"#,
+        r#"  <g inkscape:groupmode="layer" inkscape:label="{name}" data-phyro-locked="{}"{visible}"#,
         layer.locked
     )?;
+    blend(out, layer.blend_mode)?;
+    writeln!(out, ">")?;
     write_objects(out, objects, frame, "phyro")?;
     writeln!(out, "  </g>")
 }
@@ -187,6 +194,7 @@ fn write_object(
             m.ty,
             object.opacity_at(frame)
         )?;
+        blend(out, object.blend_mode)?;
         if object.embedded_artwork.is_some()
             && super::pressure_paint::exported_composite(art, child_frame)
         {
@@ -203,13 +211,19 @@ fn write_object(
                 art.width, art.height
             )?;
         }
-        write_objects(out, art.paint_order(), child_frame, &key)?;
+        write_placed_layers(out, art, child_frame, &key)?;
         if object.clip_instance.is_some() {
             writeln!(out, "      </g>")?;
         }
         return writeln!(out, "    </g>");
     }
+    if object.image.is_none()
+        && (!object.fill_blend_mode.is_normal() || !object.stroke_blend_mode.is_normal())
+    {
+        return write_paint_pair(out, object, frame, &key, outer_stencil);
+    }
     write_geometry_at(out, object, frame, true)?;
+    blend(out, object.blend_mode)?;
     let opacity = object.opacity_at(frame);
     if opacity < 1. {
         write!(out, r#" opacity="{opacity}""#)?;
@@ -221,7 +235,106 @@ fn write_object(
         return writeln!(out, "/>");
     }
     write_fill(out, object, frame, &key)?;
-    stroke_paint(out, "stroke", object, frame, &key)?;
+    write_stroke(out, object, frame, &key)?;
+    writeln!(out, "/>")
+}
+
+fn blend(out: &mut impl Write, mode: BlendMode) -> io::Result<()> {
+    if !mode.is_normal() {
+        write!(out, r#" style="mix-blend-mode:{}""#, mode.name())?;
+    }
+    Ok(())
+}
+
+fn write_placed_layers(
+    out: &mut impl Write,
+    art: &Document,
+    frame: u32,
+    scope: &str,
+) -> io::Result<()> {
+    let ordered = art.paint_order();
+    if art.layers.iter().all(|l| l.blend_mode.is_normal()) {
+        return write_objects(out, ordered, frame, scope);
+    }
+    for layer in art.layers.iter().filter(|layer| layer.visible) {
+        if !layer.blend_mode.is_normal() {
+            write!(out, "    <g")?;
+            blend(out, layer.blend_mode)?;
+            writeln!(out, ">")?;
+        }
+        write_objects(
+            out,
+            ordered.iter().copied().filter(|o| o.layer == layer.id),
+            frame,
+            scope,
+        )?;
+        if !layer.blend_mode.is_normal() {
+            writeln!(out, "    </g>")?;
+        }
+    }
+    Ok(())
+}
+
+fn write_paint_pair(
+    out: &mut impl Write,
+    object: &VectorObject,
+    frame: u32,
+    key: &str,
+    outer_stencil: bool,
+) -> io::Result<()> {
+    let opacity = object.opacity_at(frame);
+    let stencil = object.stencil.is_some() && !outer_stencil;
+    let has_fill = object.has_fill_at(frame);
+    let has_stroke = object.has_stroke_at(frame);
+    // With one painted channel, place its blend on the masked group so the
+    // CSS blend still sees the scene behind the mask.
+    let (pair, mode) = if stencil && object.blend_mode.is_normal() && !(has_fill && has_stroke) {
+        if has_stroke {
+            ("stroke", object.stroke_blend_mode)
+        } else {
+            ("fill", object.fill_blend_mode)
+        }
+    } else {
+        ("true", object.blend_mode)
+    };
+    write!(out, r#"    <g data-phyro-paint-pair="{pair}""#)?;
+    blend(out, mode)?;
+    let grouped = !mode.is_normal() || stencil || has_fill && has_stroke;
+    if grouped && opacity < 1. {
+        write!(out, r#" opacity="{opacity}""#)?;
+    }
+    if !outer_stencil {
+        super::defs::write_stencil_ref(out, object, key)?;
+    }
+    writeln!(out, ">")?;
+    for (fill, mode) in [
+        (true, object.fill_blend_mode),
+        (false, object.stroke_blend_mode),
+    ] {
+        write_geometry_at(out, object, frame, !fill)?;
+        blend(out, mode)?;
+        if !grouped && opacity < 1. {
+            write!(out, r#" opacity="{opacity}""#)?;
+        }
+        if fill {
+            write_fill(out, object, frame, key)?;
+            write!(out, r#" stroke="none""#)?;
+        } else {
+            write!(out, r#" fill="none""#)?;
+            write_stroke(out, object, frame, key)?;
+        }
+        writeln!(out, "/>")?;
+    }
+    writeln!(out, "    </g>")
+}
+
+fn write_stroke(
+    out: &mut impl Write,
+    object: &VectorObject,
+    frame: u32,
+    key: &str,
+) -> io::Result<()> {
+    stroke_paint(out, "stroke", object, frame, key)?;
     let cap = match object.cap {
         LineCap::Butt => "butt",
         LineCap::Round => "round",
@@ -232,9 +345,9 @@ fn write_object(
         LineJoin::Round => "round",
         LineJoin::Bevel => "bevel",
     };
-    writeln!(
+    write!(
         out,
-        r#" stroke-width="{}" stroke-linecap="{cap}" stroke-linejoin="{join}"/>"#,
+        r#" stroke-width="{}" stroke-linecap="{cap}" stroke-linejoin="{join}""#,
         object.stroke_width_at(frame)
     )
 }
@@ -364,10 +477,26 @@ fn write_pressure_paint(
     if stencil {
         super::defs::write_captured(out, object, frame, key)?;
     }
-    let grouped_opacity = has_fill && outline.is_some() && opacity < 1.;
-    let composite = stencil || grouped_opacity;
+    let multiple_paints = object.has_fill_at(frame) && outline.is_some();
+    let mode = if object.blend_mode.is_normal() && stencil && !multiple_paints {
+        if outline.is_some() {
+            object.stroke_blend_mode
+        } else {
+            object.fill_blend_mode
+        }
+    } else {
+        object.blend_mode
+    };
+    let object_blend = !mode.is_normal();
+    // Preserve the editable pressure composite for an enabled transparent fill.
+    let has_channel_blend =
+        !object.fill_blend_mode.is_normal() || !object.stroke_blend_mode.is_normal();
+    let grouped_opacity = opacity < 1.
+        && (object_blend || multiple_paints || !has_channel_blend && has_fill && outline.is_some());
+    let composite = stencil || grouped_opacity || object_blend;
     if composite {
         write!(out, r#"    <g data-phyro-ungrouped="true""#)?;
+        blend(out, mode)?;
         if grouped_opacity {
             write!(out, r#" opacity="{opacity}""#)?;
         }
@@ -379,7 +508,7 @@ fn write_pressure_paint(
     if has_fill {
         write_geometry_at(out, object, frame, false)?;
         write_fill(out, object, frame, key)?;
-        finish_pressure_paint(out, opacity, grouped_opacity)?;
+        finish_pressure_paint(out, opacity, grouped_opacity, object.fill_blend_mode)?;
     }
     if let Some(path) = outline {
         if let Some(g) = object
@@ -394,7 +523,7 @@ fn write_pressure_paint(
             write!(out, r#"""#)?;
             stroke_paint(out, "fill", object, frame, key)?;
         }
-        finish_pressure_paint(out, opacity, grouped_opacity)?;
+        finish_pressure_paint(out, opacity, grouped_opacity, object.stroke_blend_mode)?;
     }
     if composite {
         writeln!(out, "    </g>")?;
@@ -478,7 +607,9 @@ fn finish_pressure_paint(
     out: &mut impl Write,
     opacity: f32,
     grouped_opacity: bool,
+    mode: BlendMode,
 ) -> io::Result<()> {
+    blend(out, mode)?;
     if !grouped_opacity && opacity < 1. {
         write!(out, r#" opacity="{opacity}""#)?;
     }

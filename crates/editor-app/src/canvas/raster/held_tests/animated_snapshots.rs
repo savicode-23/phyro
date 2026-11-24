@@ -34,7 +34,7 @@ fn animated_ticks_share_authored_artwork_and_repaint_the_requested_pose() {
 
     let mut canvas = Canvas::default();
     let ctx = egui::Context::default();
-    let mut paint = |doc: &Document, frame, preview: Option<&Arc<Document>>| {
+    let mut paint = |doc: &Arc<Document>, frame, preview: Option<&Arc<Document>>| {
         let output = ctx.run(Default::default(), |ctx| {
             canvas
                 .artwork_texture(ctx, doc, frame, 1., preview)
@@ -53,23 +53,23 @@ fn animated_ticks_share_authored_artwork_and_repaint_the_requested_pose() {
         let egui::ImageData::Color(image) = &delta.image else {
             panic!("expected a color image")
         };
-        let source = preview.map_or(doc, Arc::as_ref);
+        let source = preview.unwrap_or(doc);
         let expected = color_image(renderer::render(source, frame).unwrap());
         assert!(**image == expected, "wrong artwork at frame {frame}");
-        assert_eq!(cache.document.as_ref(), source);
+        assert!(Arc::ptr_eq(&cache.document, source));
         Arc::clone(&cache.document)
     };
-    let initial_pose = paint(p.clips[0].drawing_at(0), 0, None);
-    let next_pose = paint(p.clips[0].drawing_at(1), 1, None);
+    let initial_pose = paint(&p.clips[0].cels[&0], 0, None);
+    let next_pose = paint(&p.clips[0].cels[&0], 1, None);
     assert!(Arc::ptr_eq(&initial_pose, &next_pose));
 
     p.clips[child].drawing_at_mut(0).objects[0].fill = [20, 90, 160, 255];
     p.hydrate_composition().unwrap();
-    let changed_child = paint(p.clips[0].drawing_at(2), 2, None);
+    let changed_child = paint(&p.clips[0].cels[&0], 2, None);
     assert!(!Arc::ptr_eq(&next_pose, &changed_child));
     master.objects[0].fill = [30, 210, 90, 255];
     p.replace_symbol_artwork(symbol, master).unwrap();
-    let changed_symbol = paint(p.clips[0].drawing_at(3), 3, None);
+    let changed_symbol = paint(&p.clips[0].cels[&0], 3, None);
     assert!(!Arc::ptr_eq(&changed_child, &changed_symbol));
     TextStyle {
         content: "B".into(),
@@ -77,17 +77,17 @@ fn animated_ticks_share_authored_artwork_and_repaint_the_requested_pose() {
     }
     .apply(&mut p.clips[0].drawing_at_mut(4).objects[0])
     .unwrap();
-    let changed_text = paint(p.clips[0].drawing_at(4), 4, None);
+    let changed_text = paint(&p.clips[0].cels[&0], 4, None);
     assert!(!Arc::ptr_eq(&changed_symbol, &changed_text));
 
-    let doc = p.clips[0].drawing_at(0);
-    let mut preview = doc.clone();
+    let doc = &p.clips[0].cels[&0];
+    let mut preview = doc.as_ref().clone();
     preview.objects[0].position = [65., 20.];
     let preview = Arc::new(preview);
     assert!(Arc::ptr_eq(&preview, &paint(doc, 0, Some(&preview))));
     let cancelled = paint(doc, 1, None);
     assert!(!Arc::ptr_eq(&preview, &cancelled));
-    let restored = paint(initial.clips[0].drawing_at(2), 2, None);
+    let restored = paint(&initial.clips[0].cels[&0], 2, None);
     assert_eq!(restored, initial_pose);
     assert!(!Arc::ptr_eq(&cancelled, &restored));
 }

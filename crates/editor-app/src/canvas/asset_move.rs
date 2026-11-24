@@ -221,7 +221,7 @@ impl AssetMove {
     pub(super) fn prepare(
         &mut self,
         ctx: &egui::Context,
-        doc: &Document,
+        doc: &Arc<Document>,
         object: &VectorObject,
         frame: u32,
         scale: f32,
@@ -233,7 +233,8 @@ impl AssetMove {
         if self.rejected == Some(key) {
             return false;
         }
-        let ready = self.try_prepare(ctx, doc, object, frame, scale);
+        let ready = !renderer::requires_scene_compositing(doc)
+            && self.try_prepare(ctx, doc, object, frame, scale);
         self.rejected = (!ready).then_some(key);
         ready
     }
@@ -245,7 +246,7 @@ impl AssetMove {
     fn try_prepare(
         &mut self,
         ctx: &egui::Context,
-        doc: &Document,
+        doc: &Arc<Document>,
         object: &VectorObject,
         frame: u32,
         scale: f32,
@@ -259,7 +260,7 @@ impl AssetMove {
             && self
                 .backdrop
                 .as_ref()
-                .is_some_and(|b| b.source.as_ref() == doc)
+                .is_some_and(|b| Arc::ptr_eq(&b.source, doc) || b.source.as_ref() == doc.as_ref())
         {
             return true;
         }
@@ -322,11 +323,11 @@ impl AssetMove {
         else {
             return false;
         };
-        let mut background = doc.clone();
+        let mut background = doc.as_ref().clone();
         let below: std::collections::HashSet<_> = objects[..first].iter().map(|o| o.id).collect();
         background.objects.retain(|o| below.contains(&o.id));
         self.backdrop = Some(Backdrop {
-            source: Arc::new(doc.clone()),
+            source: Arc::clone(doc),
             below: Arc::new(background),
             under,
             above,
@@ -380,10 +381,9 @@ impl AssetMove {
         self.sprite
             .as_ref()
             .is_some_and(|s| s.original.id == id && s.frame == frame)
-            && self
-                .backdrop
-                .as_ref()
-                .is_some_and(|b| b.source.as_ref() == source)
+            && self.backdrop.as_ref().is_some_and(|b| {
+                std::ptr::eq(b.source.as_ref(), source) || b.source.as_ref() == source
+            })
     }
 
     pub(super) fn cancel(&mut self) {
@@ -639,7 +639,7 @@ mod tests {
                 .place_clip(project.clips[src].id, 0, 0, 1, [20. * i as f32, 0.])
                 .unwrap();
         }
-        let doc = project.clips[0].drawing_at(0);
+        let doc = &project.clips[0].cels[&0];
         let ctx = egui::Context::default();
         let mut cache = AssetMove::default();
         cache.set_view(Rect::from_min_max(Pos2::ZERO, egui::pos2(256., 256.)));

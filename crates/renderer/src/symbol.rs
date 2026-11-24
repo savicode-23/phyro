@@ -15,12 +15,11 @@ pub(super) fn draw_symbol_content(
         .symbol_transform(frame)
         .ok_or("Invalid symbol transform.")?
         .post_concat(transform);
-    clip_groups::paint(
+    clip_groups::paint_with_layers(
         target,
         clip_groups::runs(definition.paint_order().into_iter(), local_frame),
-        local_frame,
-        local,
-        page_origin,
+        &definition.layers,
+        (local_frame, local, page_origin),
         None,
         purpose,
     )

@@ -1,5 +1,5 @@
-use super::{layer_exposures::RIG, retime, Clip, Edit};
-use std::collections::{btree_map::Entry, BTreeMap, HashMap, HashSet};
+use super::{layer_exposures::RIG, retime, update_shared_drawings, Clip, Edit};
+use std::collections::{btree_map::Entry, BTreeMap, HashSet};
 use std::sync::Arc;
 
 /// Original half-open interval and the tick at which its two sides meet after removal.
@@ -101,20 +101,9 @@ impl Clip {
 
         // Work off the original poses once, even when many separated frames are removed
         // or several cels share a drawing. Publish only after all tracks validate.
-        let mut retimed = HashMap::new();
-        for doc in cels.values_mut() {
-            let key = Arc::as_ptr(doc);
-            if let Some(previous) = retimed.get(&key) {
-                *doc = Arc::clone(previous);
-            } else {
-                retime(
-                    Arc::make_mut(doc),
-                    Edit::Remove(&removal),
-                    removal.remaining,
-                )?;
-                retimed.insert(key, Arc::clone(doc));
-            }
-        }
+        update_shared_drawings(cels.values_mut(), |doc| {
+            retime(doc, Edit::Remove(&removal), removal.remaining)
+        })?;
         self.events = std::mem::take(&mut self.events)
             .into_iter()
             .filter_map(|(tick, names)| {

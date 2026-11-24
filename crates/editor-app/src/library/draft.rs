@@ -94,6 +94,7 @@ impl Draft {
             canvas: Canvas::default(),
             path_shortcuts: Default::default(),
             style: CanvasStyle {
+                group_edit: None,
                 edit_motion: false,
                 key_mode: Default::default(),
                 layer: 1,
@@ -157,6 +158,10 @@ impl Draft {
         self.tool = tool;
     }
 
+    fn selection_scope(&self) -> document_core::arrange::SelectionScope {
+        self.canvas.selection_scope(&self.style, &self.selection)
+    }
+
     fn shortcuts(&mut self, ui: &egui::Ui) {
         let ctx = ui.ctx();
         let available = ui.is_enabled()
@@ -196,15 +201,38 @@ impl Draft {
         if !self.canvas.path_in_progress() {
             self.style_clipboard(ctx);
         }
+        let scope = self.selection_scope();
+        let whole_groups = scope == document_core::arrange::SelectionScope::Groups;
+        if count > 0
+            && !ctx.memory(|m| m.any_popup_open())
+            && keymap::pressed(ctx, Action::SimplifyPath)
+        {
+            self.record();
+            let doc = self.temp.clips[0].drawing_at_mut(0);
+            if crate::path_editor::simplify::apply(
+                ctx,
+                doc,
+                &self.selection,
+                0,
+                self.style.key_mode,
+            )
+            .is_some()
+            {
+                self.error = None;
+                self.record();
+            }
+            return;
+        }
         if count > 0
             && !ctx.memory(|m| m.any_popup_open())
             && keymap::pressed(ctx, Action::LockObjects)
         {
-            document_core::arrange::set_object_locks(
-                self.temp.clips[0].drawing_at_mut(0),
-                &self.selection,
-                true,
-            );
+            let doc = self.temp.clips[0].drawing_at_mut(0);
+            if whole_groups {
+                document_core::arrange::set_object_locks(doc, &self.selection, true);
+            } else {
+                document_core::arrange::set_selected_locks(doc, &self.selection, true);
+            }
             self.selection.clear();
             self.record();
             return;
@@ -237,11 +265,13 @@ impl Draft {
             }
         }
         if count > 0 {
-            if let Some(action) = crate::editor::edit_commands::grouping_shortcut(ctx) {
-                self.record();
-                action.apply(self.temp.clips[0].drawing_at_mut(0), &mut self.selection);
-                self.record();
-                return;
+            if whole_groups {
+                if let Some(action) = crate::editor::edit_commands::grouping_shortcut(ctx) {
+                    self.record();
+                    action.apply(self.temp.clips[0].drawing_at_mut(0), &mut self.selection);
+                    self.record();
+                    return;
+                }
             }
             use crate::tool_keys::{selection_shortcuts, FLIPS, STACKING};
             if !self.canvas.moving_selection() && !ctx.memory(|m| m.any_popup_open()) {
@@ -254,18 +284,23 @@ impl Draft {
                 }
             }
             for order in selection_shortcuts(ctx, &STACKING, true) {
-                commands::arrange(
+                commands::arrange_in(
                     self.temp.clips[0].drawing_at_mut(0),
                     &self.selection,
                     0,
                     order,
+                    scope,
                 );
                 self.record();
             }
         }
         if count > 0 && keymap::pressed(ctx, Action::Duplicate) {
             self.record();
-            let copies = commands::duplicate(self.temp.clips[0].drawing_at_mut(0), &self.selection);
+            let copies = commands::duplicate_in(
+                self.temp.clips[0].drawing_at_mut(0),
+                &self.selection,
+                scope,
+            );
             if !copies.is_empty() {
                 self.selection = copies;
                 self.set_tool(Tool::Select);
@@ -316,7 +351,7 @@ impl Draft {
             Some(Action::Undo) => self.restore(false),
             Some(Action::Redo) => self.restore(true),
             Some(Action::Delete) if self.tool != Tool::Node => {
-                commands::delete(self.temp.clips[0].drawing_at_mut(0), &self.selection);
+                commands::delete_in(self.temp.clips[0].drawing_at_mut(0), &self.selection, scope);
                 self.selection.clear();
             }
             _ => {
@@ -342,8 +377,16 @@ impl Draft {
 
     fn flip_selection(&mut self, horizontal: bool) {
         self.record();
+        let scope = self.selection_scope();
         let doc = self.temp.clips[0].drawing_at_mut(0);
-        if crate::canvas::flip_selection(doc, &self.selection, 0, horizontal, self.style.key_mode) {
+        if crate::canvas::flip_selection_in(
+            doc,
+            &self.selection,
+            0,
+            horizontal,
+            self.style.key_mode,
+            scope,
+        ) {
             self.error = None;
             self.record();
         } else {
@@ -369,11 +412,12 @@ impl Draft {
 
     fn style_clipboard(&mut self, ctx: &egui::Context) {
         use crate::editor::edit_commands::{clipboard_input, request_paste, ClipboardInput};
+        let scope = self.selection_scope();
         for action in clipboard_input(ctx, false) {
             match action {
                 ClipboardInput::Copy if !self.selection.is_empty() => {
                     let mut source = commands::Clipboard::default();
-                    source.copy_project(&self.temp, 0, 0, &self.selection);
+                    source.copy_project_in(&self.temp, 0, 0, &self.selection, scope);
                     if !source.is_empty() {
                         source.publish(ctx);
                     }
@@ -385,7 +429,14 @@ impl Draft {
                     if let Some(source) = commands::Clipboard::from_system(ctx, &text) {
                         self.record();
                         let doc = self.temp.clips[0].drawing_at_mut(0);
-                        if source.paste_style(doc, &self.selection, 0, self.style.key_mode) > 0 {
+                        if source.paste_style_in(
+                            doc,
+                            &self.selection,
+                            0,
+                            self.style.key_mode,
+                            scope,
+                        ) > 0
+                        {
                             if let Some(object) = doc
                                 .objects
                                 .iter()

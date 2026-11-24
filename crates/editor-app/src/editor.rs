@@ -10,6 +10,7 @@ mod drafts;
 mod drop_files;
 pub(crate) mod edit_commands;
 mod folder_assets;
+mod group_edit;
 mod guided_morph;
 mod keyboard_settings;
 mod notices;
@@ -69,8 +70,7 @@ pub struct Editor {
     saved: Option<AnimationProject>,
     // A baseline for the in-progress gesture. History stores only its differences.
     baseline: AnimationProject,
-    // Inspectors and canvas take mutable access even on read-only paints. Keep
-    // the current exposure writable and return earlier unchanged cels to the baseline.
+    // Restore a shared baseline allocation when leaving a cel after a no-op edit.
     writable_cel: Option<(u64, u32)>,
     // Re-evaluated when a transaction ends or the saved snapshot changes.
     baseline_is_saved: bool,
@@ -82,6 +82,7 @@ pub struct Editor {
     text_menu: edit_commands::TextMenu,
     menu_bar_open: bool,
     artwork_menu_open: bool,
+    artwork_menu_group: Option<document_core::arrange::Group>,
     path_shortcuts: crate::path_ops::Shortcuts,
     tool: Tool,
     pencil_smoothing: u8,
@@ -144,11 +145,13 @@ impl Editor {
             text_menu: Default::default(),
             menu_bar_open: false,
             artwork_menu_open: false,
+            artwork_menu_group: None,
             path_shortcuts: Default::default(),
             tool: Tool::Rectangle,
             pencil_smoothing: crate::tool_keys::DEFAULT_PENCIL_SMOOTHING,
             pencil_pressure: false,
             style: CanvasStyle {
+                group_edit: None,
                 edit_motion: false,
                 key_mode: Default::default(),
                 fill: [88, 209, 167, 255],
@@ -430,6 +433,7 @@ impl Editor {
         self.selection.clear();
         self.history = History::default();
         self.timeline.reset_for_document();
+        self.style.group_edit = None;
         self.style.layer = Self::initial_layer(self.scene());
         self.tool = if self.scene().objects.is_empty() {
             Tool::Rectangle
@@ -589,6 +593,7 @@ impl Editor {
     /// An explicit artwork selection takes over keyboard editing from the timeline.
     fn select_artwork(&mut self, ids: Vec<u64>) {
         self.timeline.leave_grid_selection();
+        self.canvas.direct_selection = None;
         self.selection = ids;
     }
 
@@ -632,8 +637,11 @@ impl Editor {
         }
         self.capture_baseline();
         self.tidy_selection();
+        self.refresh_group_edit();
         if self.tool == Tool::Select {
-            self.selection = commands::editable_selection(self.scene(), &self.selection);
+            self.selection = self
+                .selection_scope()
+                .resolve(self.scene(), &self.selection);
         }
         self.sync_paint();
     }
@@ -644,11 +652,13 @@ impl Editor {
         }
         self.timeline.stop();
         self.canvas.cancel_drag();
-        match self.clipboard.paste_project(
+        let scope = self.style.group_scope();
+        match self.clipboard.paste_project_in(
             &mut self.project,
             self.timeline.clip,
             self.timeline.frame,
             self.style.layer,
+            scope,
         ) {
             Ok(ids) => self.select_artwork(ids),
             Err(error) => {
@@ -666,8 +676,9 @@ impl Editor {
             return;
         }
         self.finish_edit();
+        let scope = self.selection_scope();
         let doc = self.project.clips[self.timeline.clip].drawing_at_mut(self.timeline.frame);
-        let copies = commands::duplicate(doc, &self.selection);
+        let copies = commands::duplicate_in(doc, &self.selection, scope);
         if !copies.is_empty() {
             self.selection = copies;
             self.set_tool(Tool::Select);
@@ -683,8 +694,9 @@ impl Editor {
     fn stack_selection(&mut self, order: commands::Arrange) {
         self.note(Action::Stack);
         self.finish_edit();
+        let scope = self.selection_scope();
         let doc = self.project.clips[self.timeline.clip].drawing_at_mut(self.timeline.frame);
-        commands::arrange(doc, &self.selection, self.timeline.frame, order);
+        commands::arrange_in(doc, &self.selection, self.timeline.frame, order, scope);
         self.finish_edit();
     }
 
@@ -708,14 +720,16 @@ impl Editor {
 
     fn flip_selection(&mut self, horizontal: bool) {
         self.finish_edit();
+        let scope = self.selection_scope();
         let frame = self.timeline.frame;
         let drawing = self.project.clips[self.timeline.clip].drawing_at_mut(frame);
-        if crate::canvas::flip_selection(
+        if crate::canvas::flip_selection_in(
             drawing,
             &self.selection,
             frame,
             horizontal,
             self.timeline.key_mode,
+            scope,
         ) {
             self.status.clear();
             self.finish_edit();
@@ -738,7 +752,9 @@ impl Editor {
             self.inspector_tab = crate::inspector::Tab::Properties;
         }
         if tool == Tool::Select {
-            self.selection = commands::editable_selection(self.scene(), &self.selection);
+            self.selection = self
+                .selection_scope()
+                .resolve(self.scene(), &self.selection);
             self.sync_paint();
         }
         self.status.clear();
@@ -864,6 +880,14 @@ impl Editor {
         if keyboard_owned {
             return;
         }
+        if self.canvas_filter.is_some()
+            && !self.exports.is_open()
+            && keymap::pressed(ctx, Shortcut::Grayscale)
+        {
+            use crate::canvas::display_filter;
+            display_filter::set_grayscale(ctx, !display_filter::grayscale(ctx));
+            return;
+        }
         if !self.exports.is_open()
             && !ctx.input(|i| i.pointer.any_down())
             && self.document_tab_shortcuts(ctx)
@@ -873,13 +897,22 @@ impl Editor {
         if allow_canvas_edit && self.conversion_shortcuts(ctx) {
             return;
         }
+        if allow_canvas_edit && keymap::pressed(ctx, Shortcut::SimplifyPath) {
+            self.simplify_selection(ctx);
+            return;
+        }
         if allow_canvas_edit
             && keymap::pressed(ctx, Shortcut::LockObjects)
             && !self.selection.is_empty()
         {
             self.finish_edit();
+            let scope = self.selection_scope();
             let doc = self.project.clips[self.timeline.clip].drawing_at_mut(self.timeline.frame);
-            document_core::arrange::set_object_locks(doc, &self.selection, true);
+            if scope == document_core::arrange::SelectionScope::Groups {
+                document_core::arrange::set_object_locks(doc, &self.selection, true);
+            } else {
+                document_core::arrange::set_selected_locks(doc, &self.selection, true);
+            }
             self.selection.clear();
             self.finish_edit();
             return;
@@ -924,7 +957,7 @@ impl Editor {
             }
             return;
         }
-        if self.edit_shortcuts(ctx) {
+        if (allow_canvas_edit && self.group_exit_shortcut(ctx)) || self.edit_shortcuts(ctx) {
             return;
         }
         if keymap::pressed(ctx, Shortcut::Save) {
@@ -1083,7 +1116,8 @@ impl Editor {
                     });
                 }
                 let previous_paint = crate::canvas::DrawingPaint::read(&self.style);
-                let doc = self.project.clips[index].drawing_at_mut(frame);
+                let scope = self.selection_scope();
+                let doc = self.project.clips[index].drawing_snapshot_mut(frame);
                 if let Some(channel) = inspector::properties(
                     ui,
                     doc,
@@ -1092,6 +1126,7 @@ impl Editor {
                     &mut self.style,
                     edit,
                     reveal_align,
+                    scope,
                 ) {
                     self.canvas.property_pick = Some(channel);
                 }
@@ -1114,7 +1149,7 @@ impl Editor {
                     &mut self.project,
                     index,
                     frame,
-                    self.style.layer,
+                    &self.style,
                     &mut self.selection,
                 ) {
                     self.status = message;
@@ -1181,6 +1216,22 @@ impl Editor {
             _ => {}
         }
         false
+    }
+
+    fn grayscale_toggle(&self, ui: &mut egui::Ui) -> bool {
+        use crate::canvas::display_filter;
+        let supported = self.canvas_filter.is_some();
+        let mut grayscale = display_filter::grayscale(ui.ctx());
+        let tooltip = keymap::hint(ui.ctx(), "Preview artwork values", Shortcut::Grayscale);
+        let changed = ui
+            .add_enabled(supported, egui::Checkbox::new(&mut grayscale, "Grayscale"))
+            .on_hover_text(tooltip)
+            .on_disabled_hover_text("Grayscale preview requires the canvas display shader.")
+            .changed();
+        if changed {
+            display_filter::set_grayscale(ui.ctx(), grayscale);
+        }
+        changed
     }
 
     fn toolbar(&mut self, ui: &mut egui::Ui) {
@@ -1272,7 +1323,7 @@ impl Editor {
                 self.status = "Assistant sharing stopped.".into();
             }
             ui.menu_button("Path", |ui| {
-                self.path_conversion_commands(ui);
+                self.path_edit_commands(ui);
                 ui.separator();
                 let chosen = ui
                     .add_enabled_ui(!self.timeline.is_playing(), |ui| {
@@ -1303,6 +1354,9 @@ impl Editor {
                 }
                 self.panel_menu(ui);
                 ui.separator();
+                if self.grayscale_toggle(ui) {
+                    ui.close_menu();
+                }
                 let mut checkerboard = self.canvas.show_checkerboard();
                 if ui
                     .checkbox(&mut checkerboard, "Transparency checkerboard")
@@ -1423,11 +1477,14 @@ impl Editor {
                     self.note(Action::View);
                     self.canvas.fit();
                 }
+                self.grayscale_toggle(ui);
             });
         });
     }
 
     fn artboard(&mut self, ui: &mut egui::Ui) {
+        self.refresh_group_edit();
+        self.group_edit_bar(ui);
         self.timeline.leave_if_pressed(ui);
         let menu_available = !self.canvas.path_in_progress()
             && !self.canvas.text_active()
@@ -1809,6 +1866,7 @@ impl Editor {
             self.finish_edit();
         }
         if !behind_dialog {
+            self.refresh_group_edit();
             self.handle_close_request(ctx);
             self.shortcuts(ctx);
         }
@@ -2063,6 +2121,7 @@ mod tests {
     mod file_menu;
     mod folder_library;
     mod gradient_handles;
+    mod group_edit;
     mod guided_morph;
     mod inspector_tabs;
     mod keyboard_settings;

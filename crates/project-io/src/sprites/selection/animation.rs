@@ -90,9 +90,13 @@ fn measure(
     let mut union: Option<Bounds> = None;
     for exposure in exposures {
         for ticks in exposure.samples() {
-            if let Some((image, origin)) =
-                renderer::render_artwork_pose(&exposure.objects, ticks.start, scale)
-                    .map_err(invalid)?
+            if let Some((image, origin)) = renderer::render_artwork_pose(
+                &exposure.objects,
+                exposure.layers,
+                ticks.start,
+                scale,
+            )
+            .map_err(invalid)?
             {
                 let pose = Bounds::from_image(&image, origin);
                 let bounds = union.map_or(pose, |prior| prior.union(pose));
@@ -126,7 +130,9 @@ pub fn selection_animation_dimensions(
         ));
     }
     let count = range.count(clip)?;
+    check_progress(0, count, &mut progress)?;
     preset.validate().map_err(invalid)?;
+    clip.validate().map_err(invalid)?;
     let exposures = matching::exposures(clip, selected, range)?;
     let frame = measure(
         &exposures,
@@ -222,6 +228,7 @@ pub fn export_selection_animation(
         for ticks in exposure.samples() {
             let pose = renderer::render_artwork_pose(
                 &exposure.objects,
+                exposure.layers,
                 ticks.start,
                 preset.raster_scale(),
             )

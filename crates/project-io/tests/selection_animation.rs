@@ -1,5 +1,7 @@
 use document_core::{AnimationProject, Document, ExportPreset};
-use project_io::{export_selection_animation, SelectionRange, SpriteOutput};
+use project_io::{
+    export_selection_animation, selection_animation_dimensions, SelectionRange, SpriteOutput,
+};
 use serde_json::{json, Value};
 use std::{fs, io::ErrorKind, path::Path, sync::Arc};
 use tiny_skia::{IntRect, Pixmap};
@@ -49,6 +51,24 @@ fn range(reference: u32, first: u32, last: u32) -> SelectionRange {
 
 fn metadata(dir: &Path) -> Value {
     serde_json::from_slice(&fs::read(dir.join("sheet.json")).unwrap()).unwrap()
+}
+
+#[test]
+fn measuring_an_animated_selection_requires_a_first_drawing() {
+    let mut project = artwork();
+    let clip = &mut project.clips[0];
+    clip.cels.remove(&0);
+    let error = selection_animation_dimensions(
+        clip,
+        &[1],
+        range(0, 0, 4),
+        &project.preset,
+        SpriteOutput::Frames,
+        |_, _| true,
+    )
+    .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::InvalidData);
+    assert!(error.to_string().contains("first frame"));
 }
 
 #[test]

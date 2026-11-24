@@ -22,6 +22,7 @@ fn live_edits_match_full_render_through_overlaps_layer_changes_and_zoom() {
         name: "Overlay".into(),
         visible: true,
         locked: true,
+        blend_mode: Default::default(),
     });
     before.add_shape([8., 9.], [40., 35.], [60, 87, 242, 202], Shape::Ellipse, 2);
     let front = before.objects.last_mut().unwrap();
@@ -69,6 +70,7 @@ fn shared_preview_reuses_static_art_and_rechecks_foreground_and_layer_order() {
         name: "Glass".into(),
         visible: true,
         locked: false,
+        blend_mode: Default::default(),
     });
     before.add_shape(
         [10., 12.],

@@ -11,6 +11,7 @@ impl Canvas {
         pointer: Pos2,
         release: bool,
         selection: &mut Vec<u64>,
+        scope: SelectionScope,
     ) {
         let Some(Gesture::NodeMarquee {
             id,
@@ -24,7 +25,10 @@ impl Canvas {
         let point = view.world(pointer);
         if point.distance(*start) * view.scale < 2. && preview.is_none() {
             if release {
-                *selection = doc.hit_test(point.into(), frame).into_iter().collect();
+                *selection = doc
+                    .hit_test_in(point.into(), frame, scope)
+                    .into_iter()
+                    .collect();
                 self.gesture = None;
             }
             return;
@@ -51,12 +55,13 @@ impl Canvas {
     pub(super) fn node_click(
         &mut self,
         response: &egui::Response,
-        doc: &mut Document,
+        doc: &mut Arc<Document>,
         frame: u32,
         view: View,
         selection: &mut Vec<u64>,
         mods: egui::Modifiers,
         mode: crate::timeline::KeyMode,
+        scope: SelectionScope,
     ) -> bool {
         if let Some(Gesture::Node {
             id,
@@ -75,7 +80,7 @@ impl Canvas {
                 self.gesture = None;
                 self.last_node_click = None;
                 return crate::path_editor::styles::cycle_at(
-                    doc,
+                    Arc::make_mut(doc),
                     id,
                     frame,
                     mode,
@@ -94,7 +99,7 @@ impl Canvas {
             if let Some((at, _)) = response.ctx.input(|i| primary_button(i, false)) {
                 // A click still picks painted artwork. Only a drag claims the nearby curve.
                 *selection = doc
-                    .hit_test(view.world(at).into(), frame)
+                    .hit_test_in(view.world(at).into(), frame, scope)
                     .into_iter()
                     .collect();
                 self.gesture = None;
@@ -131,7 +136,7 @@ impl Canvas {
         let point = view.world(at);
         let radius = 7. / view.scale;
         let picked = id.or(first_id);
-        let Some((id, node)) = self.split_edge(doc, frame, point, radius, picked) else {
+        let Some((id, node)) = self.split_edge(doc, frame, point, radius, picked, scope) else {
             return false;
         };
         *selection = vec![id];
@@ -141,11 +146,12 @@ impl Canvas {
 
     fn split_edge(
         &mut self,
-        doc: &mut Document,
+        doc: &mut Arc<Document>,
         frame: u32,
         point: Pos2,
         radius: f32,
         picked: Option<u64>,
+        scope: SelectionScope,
     ) -> Option<(u64, paths::NodeIndex)> {
         let mut floor = None;
         if let Some(id) = picked {
@@ -174,6 +180,9 @@ impl Canvas {
             .iter()
             .enumerate()
             .filter_map(|(i, o)| {
+                if !scope.contains(o) {
+                    return None;
+                }
                 let order = (*layers.get(&o.layer)?, i);
                 if floor.is_some_and(|covered| order <= covered) {
                     return None;
@@ -212,7 +221,7 @@ impl Canvas {
 
     fn split_visible(
         &mut self,
-        doc: &mut Document,
+        doc: &mut Arc<Document>,
         frame: u32,
         point: Pos2,
         radius: f32,
@@ -237,7 +246,7 @@ impl Canvas {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn insert_node(
         &mut self,
-        doc: &mut Document,
+        doc: &mut Arc<Document>,
         frame: u32,
         index: usize,
         point: Pos2,
@@ -251,14 +260,14 @@ impl Canvas {
                 && cached.can_refine_split(doc, frame, &doc.objects[index])
         });
         let node = paths::insert_near(
-            &mut doc.objects[index],
+            &mut Arc::make_mut(doc).objects[index],
             frame,
             point,
             radius,
             allow_primitive,
         )?;
         if let Some(cached) = painted {
-            cached.pending_split = Some(std::sync::Arc::new(doc.clone()));
+            cached.pending_split = Some(Arc::clone(doc));
         }
         Some(node)
     }

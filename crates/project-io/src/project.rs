@@ -40,11 +40,30 @@ const SET_EXPORT_INCLUSION_VERSION: u32 = 24;
 const FRACTIONAL_RASTER_SCALE_VERSION: u32 = 25;
 const OBJECT_LOCK_VERSION: u32 = 26;
 const DOCUMENT_GRID_VERSION: u32 = 27;
+const BLEND_MODE_VERSION: u32 = 28;
+
+fn layer_version(document: &Document, version: u32) -> u32 {
+    if document
+        .layers
+        .iter()
+        .any(|layer| !layer.blend_mode.is_normal())
+    {
+        BLEND_MODE_VERSION
+    } else {
+        version
+    }
+}
 
 fn required_object_version(version: u32, object: &document_core::VectorObject) -> u32 {
     let cutter = object.clip_source.as_ref().map(|b| &b.source.object);
+    if version == BLEND_MODE_VERSION
+        || object.uses_blending()
+        || cutter.is_some_and(document_core::VectorObject::uses_blending)
+    {
+        return BLEND_MODE_VERSION;
+    }
     if version == OBJECT_LOCK_VERSION || object.locked || cutter.is_some_and(|o| o.locked) {
-        return OBJECT_LOCK_VERSION;
+        return version.max(OBJECT_LOCK_VERSION);
     }
     if version >= GUIDED_MORPH_VERSION
         || object.animated.guided_geometry.is_some()
@@ -100,10 +119,9 @@ fn required_object_version(version: u32, object: &document_core::VectorObject) -
 }
 
 fn animation_version(project: &AnimationProject) -> u32 {
-    if project.grid != Default::default() {
-        return DOCUMENT_GRID_VERSION;
-    }
-    let minimum = if std::iter::once(&project.preset)
+    let minimum = if project.grid != Default::default() {
+        DOCUMENT_GRID_VERSION
+    } else if std::iter::once(&project.preset)
         .chain(project.presets.values())
         .any(|preset| preset.scale_divisor != 1)
     {
@@ -137,12 +155,16 @@ fn animation_version(project: &AnimationProject) -> u32 {
         if !seen.insert(std::ptr::from_ref(doc)) {
             continue;
         }
+        version = layer_version(doc, version);
+        if version == BLEND_MODE_VERSION {
+            return version;
+        }
         if !doc.skeleton.foot_pins.is_empty() {
             version = version.max(FOOT_PIN_VERSION);
         }
         for object in &doc.objects {
             version = required_object_version(version, object);
-            if version == OBJECT_LOCK_VERSION {
+            if version == BLEND_MODE_VERSION {
                 return version;
             }
             if let Some(artwork) = &object.embedded_artwork {
@@ -215,10 +237,10 @@ fn write_project(path: &Path, document: &Document, mode: WriteMode) -> io::Resul
             "Save the animation project to include referenced symbols and clips.",
         ));
     }
-    let version = document
-        .objects
-        .iter()
-        .fold(FORMAT_VERSION, required_object_version);
+    let version = document.objects.iter().fold(
+        layer_version(document, FORMAT_VERSION),
+        required_object_version,
+    );
     if version >= PATH_EDITING_VERSION {
         let mut stored = embedded::Stored::pack(AnimationProject::from_document(document.clone()))?;
         stored.drawing_only = true;
@@ -318,7 +340,7 @@ fn write_archive(
 }
 
 pub fn load_project(path: &Path) -> io::Result<Document> {
-    let (version, data) = read_archive(path, DOCUMENT_GRID_VERSION)?;
+    let (version, data) = read_archive(path, BLEND_MODE_VERSION)?;
     if version >= PATH_EDITING_VERSION {
         let stored: embedded::Stored =
             serde_json::from_slice(&data).map_err(|e| invalid(format!("Invalid drawing: {e}")))?;
@@ -357,17 +379,14 @@ pub fn load_project(path: &Path) -> io::Result<Document> {
 
 /// Open animation projects or upgrade a v1/v2 scene to one editable clip in memory.
 pub fn load_animation(path: &Path) -> io::Result<AnimationProject> {
-    let (version, data) = read_archive(path, DOCUMENT_GRID_VERSION)?;
+    let (version, data) = read_archive(path, BLEND_MODE_VERSION)?;
     decode_animation(version, &data)
 }
 
 /// Load the exact snapshot a headless caller has fingerprinted, including legacy files.
 pub fn load_animation_bytes(bytes: &[u8]) -> io::Result<AnimationProject> {
-    let (version, data) = read_archive_from(
-        Cursor::new(bytes),
-        bytes.len() as u64,
-        DOCUMENT_GRID_VERSION,
-    )?;
+    let (version, data) =
+        read_archive_from(Cursor::new(bytes), bytes.len() as u64, BLEND_MODE_VERSION)?;
     decode_animation(version, &data)
 }
 
@@ -456,10 +475,10 @@ fn read_archive_from(
 fn read_document(version: u32, data: &[u8]) -> io::Result<Document> {
     let mut document: Document =
         serde_json::from_slice(data).map_err(|e| invalid(format!("Invalid document: {e}")))?;
-    let required_version = document
-        .objects
-        .iter()
-        .fold(FORMAT_VERSION, required_object_version);
+    let required_version = document.objects.iter().fold(
+        layer_version(&document, FORMAT_VERSION),
+        required_object_version,
+    );
     if required_version >= REFLECTION_VERSION {
         return Err(invalid(format!(
             "This artwork requires native project format {required_version}."

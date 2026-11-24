@@ -11,7 +11,7 @@ pub(super) struct ChannelPaint<'a> {
 }
 
 struct Targets<'a> {
-    doc: &'a mut Document,
+    doc: &'a mut Arc<Document>,
     selected: &'a [u64],
     primary: Option<usize>,
     frame: u32,
@@ -52,18 +52,32 @@ impl Targets<'_> {
         })
     }
 
-    fn for_selected(&mut self, mut edit: impl FnMut(&mut VectorObject)) {
+    fn for_selected(&mut self, property: Property, mut edit: impl FnMut(&mut VectorObject)) {
         let Some(index) = self.primary else { return };
+        let mode = self.style.key_mode;
+        let frame = self.frame;
+        let allows = |object: &VectorObject| mode.allows(object, frame, property);
         if self.selected.len() == 1 {
-            if commands::is_editable(self.doc, self.doc.objects[index].layer) {
-                edit(&mut self.doc.objects[index]);
+            let object = &self.doc.objects[index];
+            if commands::is_editable(self.doc, object.layer) && allows(object) {
+                edit(&mut Arc::make_mut(self.doc).objects[index]);
             }
         } else {
-            let ids: HashSet<_> = commands::editable_selection(self.doc, self.selected)
+            let ids: HashSet<_> = self
+                .style
+                .group_scope()
+                .resolve(self.doc, self.selected)
                 .into_iter()
                 .collect();
-            for object in &mut self.doc.objects {
-                if commands::has_vector_paint(object) && ids.contains(&object.id) {
+            let enabled = |o: &VectorObject| {
+                ids.contains(&o.id) && commands::has_vector_paint(o) && allows(o)
+            };
+            if self.doc.objects.iter().any(enabled) {
+                for object in Arc::make_mut(self.doc)
+                    .objects
+                    .iter_mut()
+                    .filter(|o| enabled(o))
+                {
                     edit(object);
                 }
             }
@@ -81,10 +95,7 @@ impl Targets<'_> {
             1.
         };
         let (color, gradient, disabled) = if let Some(primary) = self.primary {
-            self.for_selected(|object| {
-                if !mode.allows(object, frame, channel.property()) {
-                    return;
-                }
+            self.for_selected(channel.property(), |object| {
                 let was_disabled = channel.is_none(object);
                 channel.set_none(object, disabled);
                 if keep_previous_paint {
@@ -144,7 +155,7 @@ impl Targets<'_> {
     fn set_solid(&mut self, channel: PaintChannel, color: [u8; 4]) {
         let frame = self.frame;
         let mode = self.style.key_mode;
-        self.for_selected(|object| {
+        self.for_selected(channel.property(), |object| {
             if mode.set(object, frame, channel.property(), KeyValue::Color(color)) {
                 channel.set_none(object, false);
                 *channel.gradient_mut(object) = None;
@@ -190,7 +201,7 @@ impl Targets<'_> {
 
 pub(super) fn show(
     ui: &mut Ui,
-    doc: &mut Document,
+    doc: &mut Arc<Document>,
     selected: &[u64],
     style: &mut CanvasStyle,
     frame: u32,
@@ -236,11 +247,12 @@ pub(super) fn show(
                 .on_hover_text("Include this image in exported frames, sprite sheets and SVGs.")
                 .changed()
             {
-                doc.objects[index].reference_only = !included;
+                Arc::make_mut(doc).objects[index].reference_only = !included;
             }
         } else {
             ui.weak("Edit the source artwork to change its paint.");
         }
+        super::blending::objects(ui, doc, selected, style.group_scope());
         opacity(ui, doc, selected, frame, style.key_mode);
         return None;
     }
@@ -273,10 +285,11 @@ pub(super) fn show(
     {
         targets.style.stroke_width = width;
         let mode = targets.style.key_mode;
-        targets.for_selected(|o| {
+        targets.for_selected(Property::StrokeWidth, |o| {
             mode.set(o, frame, Property::StrokeWidth, KeyValue::Scalar(width));
         });
     }
+    super::blending::objects(ui, targets.doc, selected, targets.style.group_scope());
     opacity(ui, targets.doc, selected, frame, targets.style.key_mode);
     let channel = targets.style.gradient_channel;
     let paint = targets.paint(channel);

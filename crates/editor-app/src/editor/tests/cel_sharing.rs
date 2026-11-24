@@ -12,28 +12,19 @@ fn three_cels() -> AnimationProject {
 }
 
 #[test]
-fn navigation_shares_inactive_cels_and_keeps_the_current_exposure_writable() {
+fn navigation_shares_all_cels_until_an_edit() {
     let mut w = EditorWindow::new(egui::vec2(1100., 740.));
     w.editor.replace_project(three_cels(), None);
-    let mut last = None;
     for tick in [0, 1, 2, 3, 4, 0, 3, 4] {
         w.editor.timeline.frame = tick;
         w.frame(vec![]);
         let clip = &w.editor.project.clips[0];
-        let active = clip.exposure(tick).0;
-        let current = Arc::as_ptr(&clip.cels[&active]);
-        if let Some((at, ptr)) = last {
-            if at == active {
-                assert_eq!(ptr, current, "redrawing an exposure made another copy");
-            }
-        }
         for (at, cel) in &clip.cels {
-            assert_eq!(
+            assert!(
                 Arc::ptr_eq(cel, &w.editor.baseline.clips[0].cels[at]),
-                *at != active
+                "navigating to frame {tick} copied the drawing at {at}"
             );
         }
-        last = Some((active, current));
     }
     assert!(!w.editor.can_undo());
 
@@ -41,6 +32,9 @@ fn navigation_shares_inactive_cels_and_keeps_the_current_exposure_writable() {
     let before = w.editor.project.clone();
     w.editor.project.clips[0].drawing_at_mut(4).objects[0].position = [29., 43.];
     let after = w.editor.project.clone();
+    for (at, cel) in &after.clips[0].cels {
+        assert_eq!(Arc::ptr_eq(cel, &before.clips[0].cels[at]), *at != 4);
+    }
     w.editor.timeline.frame = 2;
     w.frame(vec![]);
     assert_eq!(w.editor.project, after);

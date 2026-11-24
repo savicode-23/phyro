@@ -2,6 +2,8 @@ use super::Editor;
 use crate::recovery::Writer;
 use eframe::egui;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const IDLE_DELAY: Duration = Duration::from_secs(2);
@@ -12,6 +14,7 @@ pub(super) struct DraftSession {
     pub(super) writer: Writer,
     recovered_source: Option<PathBuf>,
     scheduled: Option<Checkpoint>,
+    failures: Arc<AtomicBool>,
 }
 
 struct Checkpoint {
@@ -30,13 +33,18 @@ impl Checkpoint {
 }
 
 impl DraftSession {
-    pub(super) fn new(root: PathBuf) -> Self {
+    fn new(root: PathBuf, failures: Arc<AtomicBool>) -> Self {
         Self {
             writer: Writer::new(root.clone()),
             root,
             recovered_source: None,
             scheduled: None,
+            failures,
         }
+    }
+
+    pub(super) fn new_tab(&self) -> Self {
+        Self::new(self.root.clone(), self.failures.clone())
     }
 
     fn poll(
@@ -58,7 +66,14 @@ impl DraftSession {
         let source = path
             .or(self.recovered_source.as_deref())
             .map(Path::to_owned);
-        match self.writer.checkpoint(source, project.clone()) {
+        let wake = ctx.clone();
+        let failures = self.failures.clone();
+        match self
+            .writer
+            .checkpoint_notifying(source, project.clone(), move || {
+                failures.store(true, Ordering::Release);
+                wake.request_repaint();
+            }) {
             Ok(()) => self.scheduled = None,
             Err(error) => {
                 self.scheduled = Some(Checkpoint {
@@ -76,7 +91,7 @@ impl DraftSession {
 impl Editor {
     pub(super) fn enable_draft_recovery(&mut self, root: PathBuf) {
         self.recovery_dialog.scan(Some(&root), true);
-        self.drafts = Some(DraftSession::new(root));
+        self.drafts = Some(DraftSession::new(root, Arc::default()));
     }
 
     pub(super) fn record_draft_change(&mut self) {
@@ -105,6 +120,10 @@ impl Editor {
     }
 
     pub(super) fn poll_draft_recovery(&mut self, ctx: &egui::Context, now: Instant) {
+        let worker_failed = self
+            .drafts
+            .as_ref()
+            .is_some_and(|drafts| drafts.failures.swap(false, Ordering::AcqRel));
         if let Some(error) = self
             .drafts
             .as_mut()
@@ -114,18 +133,19 @@ impl Editor {
             self.notices.recovery_failure(&name, &error);
             self.status = error;
         }
-        // An edit can lose focus during its autosave delay. At most one wake
-        // is needed for all parked tabs. Ordinary frames never walk that list.
-        let Some(due) = self.inactive_draft_due else {
-            return;
-        };
-        if now < due {
-            ctx.request_repaint_after(due - now);
-            return;
+        // Parked tabs need attention only when a checkpoint is due or a writer reports a failure.
+        if !worker_failed {
+            let Some(due) = self.inactive_draft_due else {
+                return;
+            };
+            if now < due {
+                ctx.request_repaint_after(due - now);
+                return;
+            }
         }
         self.inactive_draft_due = None;
         for tab in self.documents.inactive_mut() {
-            if let Some(drafts) = tab.drafts.as_mut().filter(|d| d.scheduled.is_some()) {
+            if let Some(drafts) = &mut tab.drafts {
                 if let Some(error) = drafts.poll(ctx, now, &tab.baseline, tab.path.as_deref()) {
                     let name = tab.path.as_deref().and_then(Path::file_name);
                     let name =
@@ -194,5 +214,42 @@ mod tests {
         }
         Checkpoint::schedule(&mut pending, start + Duration::from_secs(16));
         assert_eq!(pending.unwrap().due, start + MAX_DELAY);
+    }
+
+    #[test]
+    fn a_parked_checkpoint_failure_wakes_the_editor_after_its_deadline() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("drafts");
+        let ctx = egui::Context::default();
+        let mut editor = Editor::new(&ctx);
+        editor.enable_draft_recovery(root.clone());
+        // Block checkpoint creation after the recovery directory has been scanned.
+        std::fs::write(root, []).unwrap();
+        editor.project.rename_clip(0, "Edited drawing").unwrap();
+        editor.finish_edit();
+        editor.new_document_tab();
+
+        let due = editor.inactive_draft_due.unwrap();
+        editor.poll_draft_recovery(&ctx, due);
+        assert!(editor.inactive_draft_due.is_none());
+        let drafts = editor.drafts.as_ref().unwrap();
+        let timeout = Instant::now() + Duration::from_secs(5);
+        while !drafts.failures.load(Ordering::Acquire) {
+            assert!(
+                Instant::now() < timeout,
+                "checkpoint failure did not wake the editor"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        editor.poll_draft_recovery(&ctx, due);
+        assert!(editor.notices.has_history());
+        assert!(editor
+            .documents
+            .inactive_mut()
+            .next()
+            .unwrap()
+            .status
+            .contains("Could not checkpoint the recovery draft"));
     }
 }

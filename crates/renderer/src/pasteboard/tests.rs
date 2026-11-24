@@ -116,7 +116,7 @@ fn image_texels_follow_a_rotated_clipped_rectangle_across_the_page_edge() {
     doc.objects[0].image = Some(Arc::new(document_core::RasterImage::from_base64(
         "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAF0lEQVR4nGP4z8DwnwEM/jM0MDD8/w8AK2kFfIvAcEgAAAAASUVORK5CYII=",
     ).unwrap()));
-    let (crop, origin) = crate::render_artwork(&[&doc.objects[0]], 0, 1).unwrap();
+    let (crop, origin) = crate::render_artwork(&[&doc.objects[0]], &doc.layers, 0, 1).unwrap();
     assert_eq!(origin, [-1, 2]);
     assert_eq!(crop.data(), source.data());
     assert_eq!(
@@ -449,7 +449,10 @@ fn transformed_symbols_keep_overshooting_artwork_and_skip_distant_tiles() {
                 let actual = tile.render(doc).unwrap();
                 let reference = tile
                     .paint
-                    .render(clip_groups::runs(ordered.iter().copied(), scene.frame()))
+                    .render(
+                        clip_groups::runs(ordered.iter().copied(), scene.frame()),
+                        &doc.layers,
+                    )
                     .unwrap();
                 painted += usize::from(actual.pixels.is_some());
                 assert_eq!(

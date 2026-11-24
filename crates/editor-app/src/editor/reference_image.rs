@@ -77,6 +77,11 @@ impl Editor {
         };
         let drawing = clip.drawing_at_mut(self.timeline.frame);
         let id = insert(drawing, image, name, layer, destination);
+        if matches!(destination, Destination::ActiveLayer) {
+            if let Some(group) = self.style.group_scope().group() {
+                group.add_objects(drawing, &[id]);
+            }
+        }
         clip.sync_layer_edits(&self.project.clips[self.timeline.clip], self.timeline.frame)
             .map_err(io::Error::other)?;
         project_io::validate_image_import(&next)?;

@@ -1,6 +1,59 @@
 use super::*;
 
 #[test]
+fn blend_controls_edit_the_selected_scope_and_undo() {
+    use document_core::BlendMode;
+
+    let mut drawing = Document::default();
+    let id = drawing.add_rectangle([10.; 2], [24.; 2], [160; 4]);
+    drawing.objects[0].stroke_width = 4.;
+    let other = drawing.add_rectangle([18.; 2], [24.; 2], [200; 4]);
+    let mut w = EditorWindow::new(egui::vec2(1120., 840.));
+    w.ctx.style_mut(|style| style.animation_time = 0.);
+    w.editor
+        .replace_project(AnimationProject::from_document(drawing.clone()), None);
+    w.editor.selection = vec![id];
+    for (row, mode) in [
+        ("Object blend", "Overlay"),
+        ("Fill blend", "Multiply"),
+        ("Stroke blend", "Screen"),
+    ] {
+        let control = w.field_on_row(row, "Normal");
+        w.click_at(control);
+        w.click(mode);
+    }
+    let edited = &w.editor.scene().objects[0];
+    assert_eq!(edited.blend_mode, BlendMode::Overlay);
+    assert_eq!(edited.fill_blend_mode, BlendMode::Multiply);
+    assert_eq!(edited.stroke_blend_mode, BlendMode::Screen);
+    assert_eq!(w.editor.scene().objects[1], drawing.objects[1]);
+
+    w.editor.selection = vec![id, other];
+    let mixed = w.field_on_row("Fill blend", "Mixed");
+    w.click_at(mixed);
+    w.click("Normal");
+    assert!(w
+        .editor
+        .scene()
+        .objects
+        .iter()
+        .all(|o| o.fill_blend_mode.is_normal()));
+    w.click_edit("Undo");
+    assert_eq!(
+        w.editor.scene().objects[0].fill_blend_mode,
+        BlendMode::Multiply
+    );
+
+    w.click("Layers");
+    let layer = w.field_on_row("Layer blend", "Normal");
+    w.click_at(layer);
+    w.click("Darken");
+    assert_eq!(w.editor.scene().layers[0].blend_mode, BlendMode::Darken);
+    w.click_edit("Undo");
+    assert_eq!(w.editor.scene().layers[0].blend_mode, BlendMode::Normal);
+}
+
+#[test]
 fn no_paint_buttons_restore_the_original_gradient_and_apply_to_mixed_selections() {
     use document_core::{Gradient, GradientKind};
     let mut drawing = Document::default();

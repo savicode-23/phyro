@@ -1,11 +1,13 @@
 //! Shared CPU rasterization for the editor texture and headless PNG export.
 //! Pixels in the returned buffer are premultiplied RGBA, as expected by egui.
 
-use document_core::{Document, Shape, VectorObject};
+use document_core::{BlendMode, Document, Layer, Shape, VectorObject};
 pub use tiny_skia::Pixmap;
 use tiny_skia::{FillRule, FilterQuality, IntRect, Paint, Pattern, Rect, SpreadMode, Transform};
 mod appearance;
+mod blend;
 mod bounds;
+pub use blend::requires_scene_compositing;
 mod clip_groups;
 mod moving;
 pub use moving::{
@@ -82,12 +84,11 @@ fn render_page(
 ) -> Result<Pixmap, String> {
     let page = artboard(document, frame, scale)?;
     let mut pixmap = page.allocate()?;
-    clip_groups::paint(
+    clip_groups::paint_with_layers(
         &mut pixmap,
         clip_groups::runs(document.paint_order().into_iter(), frame),
-        frame,
-        page.transform,
-        [0.; 2],
+        &document.layers,
+        (frame, page.transform, [0.; 2]),
         Some(&mut bounds::SymbolBounds::new()),
         purpose,
     )?;
@@ -107,6 +108,7 @@ pub fn sample_artwork(
     }
     sample_objects(
         clip_groups::runs(doc.paint_order().into_iter(), frame),
+        &doc.layers,
         frame,
         point,
         scale,
@@ -115,6 +117,7 @@ pub fn sample_artwork(
 
 fn sample_objects<'a>(
     objects: impl IntoIterator<Item = (usize, &'a VectorObject)>,
+    layers: &[Layer],
     frame: u32,
     point: [f32; 2],
     scale: [f32; 2],
@@ -134,12 +137,11 @@ fn sample_objects<'a>(
     let mut surface = Pixmap::new(MIDDLE * 2 + 1, MIDDLE * 2 + 1)
         .ok_or("Could not allocate the artwork sample.")?;
     let mut symbols = bounds::SymbolBounds::new();
-    clip_groups::paint(
+    clip_groups::paint_with_layers(
         &mut surface,
         objects,
-        frame,
-        transform,
-        origin,
+        layers,
+        (frame, transform, origin),
         Some(&mut symbols),
         RenderPurpose::Editor,
     )?;
@@ -262,19 +264,20 @@ fn draw_member(
     }
     let multiple_paints =
         object.is_instance() || object.has_fill_at(frame) && object.has_stroke_at(frame);
-    let draw = |target: &mut Pixmap, opacity: f32| -> Result<(), String> {
+    let draw = |target: &mut Pixmap, opacity: f32, mode: BlendMode| -> Result<(), String> {
         if object.is_instance() {
             symbol::draw_symbol_content(target, object, frame, transform, page_origin, purpose)
         } else {
-            draw_object(target, object, frame, transform, page_origin, opacity);
+            draw_object(target, object, frame, transform, page_origin, opacity, mode);
             Ok(())
         }
     };
     if (!apply_stencil || object.stencil.is_none())
         && object.clip_instance.is_none()
         && (opacity == 1. || !multiple_paints)
+        && (object.blend_mode.is_normal() || !multiple_paints)
     {
-        draw(surface, opacity)?;
+        draw(surface, opacity, object.blend_mode)?;
         return Ok(());
     }
     let full = IntRect::from_xywh(0, 0, surface.width(), surface.height())
@@ -337,7 +340,7 @@ fn draw_member(
     }
     let layer = layer.as_mut().expect("allocated above");
     clear_region(layer, area);
-    draw(layer, 1.)?;
+    draw(layer, 1., BlendMode::Normal)?;
     let mut mask = if apply_stencil {
         appearance::mask(surface, object, frame, transform)?
     } else {
@@ -353,19 +356,40 @@ fn draw_member(
             mask = Some(viewport);
         }
     }
+    let mode = if object.blend_mode.is_normal() && !multiple_paints {
+        if object.has_stroke_at(frame) {
+            object.stroke_blend_mode
+        } else {
+            object.fill_blend_mode
+        }
+    } else {
+        object.blend_mode
+    };
+    composite_region(surface, layer, area, opacity, mode, mask.as_ref());
+    Ok(())
+}
+
+fn composite_region(
+    surface: &mut Pixmap,
+    source: &Pixmap,
+    area: IntRect,
+    opacity: f32,
+    mode: BlendMode,
+    mask: Option<&tiny_skia::Mask>,
+) {
     let paint = Paint {
         shader: Pattern::new(
-            layer.as_ref(),
+            source.as_ref(),
             SpreadMode::Pad,
             FilterQuality::Nearest,
             opacity,
             Transform::identity(),
         ),
         anti_alias: false,
+        blend_mode: blend::skia(mode),
         ..Default::default()
     };
-    surface.fill_rect(area.to_rect(), &paint, Transform::identity(), mask.as_ref());
-    Ok(())
+    surface.fill_rect(area.to_rect(), &paint, Transform::identity(), mask);
 }
 
 // The blend reads this rectangle in surface coordinates. Contents outside the
@@ -390,9 +414,13 @@ fn draw_object(
     transform: Transform,
     page_origin: [f32; 2],
     opacity: f32,
+    mode: BlendMode,
 ) {
     let has_stroke = object.has_stroke_at(frame);
     let mut paints = appearance::ObjectPaint::new(object, frame, opacity, transform, pixmap);
+    let paint_blend = |channel| blend::skia(if mode.is_normal() { channel } else { mode });
+    let fill_blend = paint_blend(object.fill_blend_mode);
+    let stroke_blend = paint_blend(object.stroke_blend_mode);
     if object.shape == Shape::Rectangle
         && object.rotation_at(frame) == 0.0
         && object.skew_at(frame) == 0.0
@@ -413,6 +441,7 @@ fn draw_object(
             (y + h).min((pixmap.height() as f32 - transform.ty) / transform.sy),
         ) {
             if let Some(mut paint) = paints.fill(rect) {
+                paint.blend_mode = fill_blend;
                 // At native density the page uses tiny-skia's analytic rectangle
                 // coverage. Keep that coverage on translated tiles by moving the
                 // rectangle and its paint into the destination pixel grid together.
@@ -431,7 +460,8 @@ fn draw_object(
     let Some(path) = object.outline(frame) else {
         return;
     };
-    if let Some(paint) = paints.fill(path.bounds()) {
+    if let Some(mut paint) = paints.fill(path.bounds()) {
+        paint.blend_mode = fill_blend;
         let rule = match object.fill_rule {
             document_core::FillRule::NonZero => FillRule::Winding,
             document_core::FillRule::EvenOdd => FillRule::EvenOdd,
@@ -445,13 +475,15 @@ fn draw_object(
             let style = object.stroke_style_at(frame);
             // Include the full miter or square cap in the temporary rectangular paint.
             let pad = style.width * 0.5 * style.miter_limit.max(2.);
-            if let Some(ink) =
+            if let Some(mut ink) =
                 paints.stroke(path.bounds().outset(pad, pad).unwrap_or(path.bounds()))
             {
+                ink.blend_mode = stroke_blend;
                 pixmap.stroke_path(&path, &ink, &style, transform, None);
             }
         } else if let Some(outline) = object.pressure_outline(&path, frame) {
-            if let Some(ink) = paints.stroke(outline.bounds()) {
+            if let Some(mut ink) = paints.stroke(outline.bounds()) {
+                ink.blend_mode = stroke_blend;
                 pixmap.fill_path(&outline, &ink, FillRule::Winding, transform, None);
             }
         }

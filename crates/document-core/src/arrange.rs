@@ -14,6 +14,104 @@ pub fn is_object_editable(doc: &Document, object: &VectorObject) -> bool {
     !object.locked && is_editable(doc, object.layer)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Group {
+    pub layer: u64,
+    pub id: u64,
+}
+
+impl Group {
+    pub fn of(object: &VectorObject) -> Option<Self> {
+        object.group.map(|id| Self {
+            layer: object.layer,
+            id,
+        })
+    }
+
+    pub fn contains(self, object: &VectorObject) -> bool {
+        Self::of(object) == Some(self)
+    }
+
+    pub fn add(self, object: &mut VectorObject, name: Option<std::sync::Arc<str>>) {
+        debug_assert_eq!(object.layer, self.layer);
+        object.group = Some(self.id);
+        object.group_name = name;
+    }
+
+    pub fn member(self, doc: &Document) -> Option<&VectorObject> {
+        doc.objects.iter().find(|o| self.contains(o))
+    }
+
+    pub fn add_objects(self, doc: &mut Document, ids: &[u64]) {
+        let Some(member) = self.member(doc) else {
+            return;
+        };
+        let name = member.group_name.clone();
+        let ids: HashSet<_> = ids.iter().copied().collect();
+        for object in doc
+            .objects
+            .iter_mut()
+            .filter(|o| ids.contains(&o.id) && o.layer == self.layer)
+        {
+            self.add(object, name.clone());
+        }
+    }
+}
+
+/// Resolves editor picks without widening individual-object edits to the whole group.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SelectionScope {
+    #[default]
+    Groups,
+    Objects,
+    InGroup(Group),
+}
+
+impl SelectionScope {
+    pub fn group(self) -> Option<Group> {
+        match self {
+            Self::InGroup(group) => Some(group),
+            _ => None,
+        }
+    }
+
+    pub fn contains(self, object: &VectorObject) -> bool {
+        self.group().is_none_or(|group| group.contains(object))
+    }
+
+    pub fn resolve(self, doc: &Document, ids: &[u64]) -> Vec<u64> {
+        if ids.is_empty() {
+            return Vec::new();
+        }
+        if self == Self::Groups {
+            return editable_selection(doc, ids);
+        }
+        if let [id] = ids {
+            return doc
+                .objects
+                .iter()
+                .find(|o| o.id == *id && self.contains(o) && is_object_editable(doc, o))
+                .map(|o| o.id)
+                .into_iter()
+                .collect();
+        }
+        let ids: HashSet<_> = ids.iter().copied().collect();
+        doc.objects
+            .iter()
+            .filter(|o| ids.contains(&o.id) && self.contains(o) && is_object_editable(doc, o))
+            .map(|o| o.id)
+            .collect()
+    }
+
+    fn unit(self, object: &VectorObject) -> Unit {
+        if self == Self::Groups {
+            unit(object)
+        } else {
+            Unit::Object(object.id)
+        }
+    }
+}
+
 /// Change the lock on each selected object and all members of its layer-local group.
 pub fn set_object_locks(doc: &mut Document, ids: &[u64], locked: bool) {
     let ids: HashSet<_> = ids.iter().copied().collect();
@@ -30,6 +128,20 @@ pub fn set_object_locks(doc: &mut Document, ids: &[u64], locked: bool) {
     }
 }
 
+pub fn set_selected_locks(doc: &mut Document, ids: &[u64], locked: bool) {
+    let ids: HashSet<_> = ids.iter().copied().collect();
+    let layers: HashSet<_> = doc
+        .layers
+        .iter()
+        .filter(|l| l.visible && !l.locked)
+        .map(|l| l.id)
+        .collect();
+    for object in &mut doc.objects {
+        if ids.contains(&object.id) && layers.contains(&object.layer) {
+            object.locked = locked;
+        }
+    }
+}
 pub fn editable_selection(doc: &Document, ids: &[u64]) -> Vec<u64> {
     if let [id] = ids {
         let Some(o) = doc
@@ -137,6 +249,10 @@ pub enum Reference {
 // UI enablement only needs to distinguish zero, one, two, and three or more
 // independent units. Marquee and Select All normally follow document order.
 pub fn available_units(doc: &Document, ids: &[u64]) -> usize {
+    available_units_in(doc, ids, SelectionScope::Groups)
+}
+
+pub fn available_units_in(doc: &Document, ids: &[u64], scope: SelectionScope) -> usize {
     let mut seen = [None; 3];
     let mut count = 0;
     let mut remaining = doc.objects.iter();
@@ -153,8 +269,11 @@ pub fn available_units(doc: &Document, ids: &[u64]) -> usize {
             index.get(id).copied()
         };
         if let Some(object) = object {
-            let unit = unit(object);
-            if !seen[..count].contains(&Some(unit)) && is_object_editable(doc, object) {
+            let unit = scope.unit(object);
+            if scope.contains(object)
+                && !seen[..count].contains(&Some(unit))
+                && is_object_editable(doc, object)
+            {
                 seen[count] = Some(unit);
                 count += 1;
                 if count == 3 {
@@ -214,22 +333,30 @@ fn parallel_member_bounds(
 }
 
 impl Selection {
+    #[cfg(test)]
     fn new(doc: &Document, ids: &[u64], frame: u32) -> Result<Self, String> {
-        Self::measure(doc, ids, frame, VectorObject::bounds)
+        Self::measure(
+            doc,
+            ids,
+            frame,
+            SelectionScope::Groups,
+            VectorObject::bounds,
+        )
     }
     fn measure(
         doc: &Document,
         ids: &[u64],
         frame: u32,
+        scope: SelectionScope,
         bounds_at: fn(&VectorObject, u32) -> [f32; 4],
     ) -> Result<Self, String> {
-        let selected: HashSet<_> = editable_selection(doc, ids).into_iter().collect();
+        let selected: HashSet<_> = scope.resolve(doc, ids).into_iter().collect();
         let mut units = HashMap::<Unit, usize>::new();
         let mut members = Vec::with_capacity(selected.len());
         for (index, object) in doc.objects.iter().enumerate() {
             if selected.contains(&object.id) {
                 let next_unit = units.len();
-                let unit = *units.entry(unit(object)).or_insert(next_unit);
+                let unit = *units.entry(scope.unit(object)).or_insert(next_unit);
                 members.push((index, unit));
             }
         }
@@ -354,10 +481,20 @@ pub fn plan_flip(
     frame: u32,
     horizontal: bool,
 ) -> Result<Vec<Flip>, String> {
+    plan_flip_in(doc, ids, frame, horizontal, SelectionScope::Groups)
+}
+
+pub fn plan_flip_in(
+    doc: &Document,
+    ids: &[u64],
+    frame: u32,
+    horizontal: bool,
+    scope: SelectionScope,
+) -> Result<Vec<Flip>, String> {
     if frame >= doc.frames {
         return Err("Frame outside this drawing.".into());
     }
-    let selected = Selection::measure(doc, ids, frame, flip_bounds::measure)?;
+    let selected = Selection::measure(doc, ids, frame, scope, flip_bounds::measure)?;
     let bounds = selected
         .bounds
         .into_iter()
@@ -406,10 +543,20 @@ pub fn position_updates(
     frame: u32,
     action: Action,
 ) -> Result<Vec<(usize, [f32; 2])>, String> {
+    position_updates_in(doc, ids, frame, action, SelectionScope::Groups)
+}
+
+pub fn position_updates_in(
+    doc: &Document,
+    ids: &[u64],
+    frame: u32,
+    action: Action,
+    scope: SelectionScope,
+) -> Result<Vec<(usize, [f32; 2])>, String> {
     if frame >= doc.frames {
         return Err("The playhead is outside this drawing.".into());
     }
-    let selection = Selection::new(doc, ids, frame)?;
+    let selection = Selection::measure(doc, ids, frame, scope, VectorObject::bounds)?;
     let (axis, offsets) = selection.offsets(doc, action)?;
     let mut moves = Vec::new();
     for (index, unit) in selection.members {

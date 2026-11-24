@@ -236,8 +236,7 @@ pub(super) fn finish_pen(
     let id = doc
         .add_artboard_path(std::mem::take(nodes), closed, style.layer, style.fill)
         .ok()?;
-    let object = doc.objects.last_mut()?;
-    style.paint_new_object(object);
+    style.paint_new_object(doc);
     Some(id)
 }
 

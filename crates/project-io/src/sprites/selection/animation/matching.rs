@@ -10,6 +10,7 @@ pub(super) struct Exposure<'a> {
     frames: Range<u32>,
     held: bool,
     pub objects: Vec<&'a VectorObject>,
+    pub layers: &'a [document_core::Layer],
 }
 
 impl Exposure<'_> {
@@ -155,6 +156,7 @@ pub(super) fn exposures<'a>(
             frames: first..end,
             held,
             objects,
+            layers: &clip.drawing_at(first).layers,
         });
         first = end;
     }

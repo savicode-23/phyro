@@ -34,6 +34,7 @@ fn editable_text_owns_its_line_and_word_spaces_until_painted_artwork_covers_them
         name: "Overlay".into(),
         visible: true,
         locked: false,
+        blend_mode: Default::default(),
     });
     let overlay = doc.add_shape(
         [blank_line[0] - 4., blank_line[1] - 4.],
@@ -61,6 +62,7 @@ fn text_picking_follows_the_top_editable_paint_at_each_frame() {
         name: "Top".into(),
         visible: true,
         locked: false,
+        blend_mode: Default::default(),
     });
     let front = TextStyle {
         content: "A     B\n\nC     D".into(),

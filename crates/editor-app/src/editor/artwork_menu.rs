@@ -1,7 +1,8 @@
 use super::{arrange, edit_commands::Command, Editor, Tool};
-use crate::commands::{editable_selection, GroupAction};
+use crate::commands::GroupAction;
 use crate::inspector::appearance::{clip_actions, ClipAction};
 use crate::{diagnostics::Action, keymap};
+use document_core::arrange::Group;
 use eframe::egui;
 use keymap::Action as Shortcut;
 use std::collections::HashSet;
@@ -37,8 +38,9 @@ impl Editor {
                 }
             });
             ui.menu_button("Align and Distribute", |ui| {
+                let scope = self.selection_scope();
                 if let Some(action) =
-                    crate::inspector::arrange_ui::menu(ui, self.scene(), &self.selection)
+                    crate::inspector::arrange_ui::menu(ui, self.scene(), &self.selection, scope)
                 {
                     ui.close_menu();
                     self.note(Action::Align);
@@ -46,7 +48,14 @@ impl Editor {
                     self.canvas.cancel_drag();
                     let frame = self.timeline.frame;
                     let doc = self.project.clips[self.timeline.clip].drawing_at_mut(frame);
-                    match arrange::apply(doc, &self.selection, frame, self.style.key_mode, action) {
+                    match arrange::apply_in(
+                        doc,
+                        &self.selection,
+                        frame,
+                        self.style.key_mode,
+                        action,
+                        scope,
+                    ) {
                         Ok(true) => self.status.clear(),
                         Ok(false) => {
                             self.status = match action {
@@ -125,7 +134,7 @@ impl Editor {
         action.is_some()
     }
 
-    pub(super) fn path_conversion_commands(&mut self, ui: &mut egui::Ui) {
+    pub(super) fn path_edit_commands(&mut self, ui: &mut egui::Ui) {
         let enabled = !self.timeline.is_playing()
             && !self.canvas.path_in_progress()
             && !self.canvas.text_active()
@@ -143,6 +152,46 @@ impl Editor {
         {
             ui.close_menu();
             self.convert_selected_strokes();
+        }
+        if crate::path_editor::simplify::button(
+            ui,
+            self.scene(),
+            &self.selection,
+            self.timeline.frame,
+            self.timeline.key_mode,
+            enabled,
+        ) {
+            ui.close_menu();
+            self.simplify_selection(ui.ctx());
+        }
+    }
+
+    pub(super) fn simplify_selection(&mut self, ctx: &egui::Context) {
+        if self.timeline.key_mode == crate::timeline::KeyMode::Auto {
+            self.status = "Switch to Tracked or Manual to simplify paths.".into();
+            return;
+        }
+        self.finish_edit();
+        self.canvas.cancel_drag();
+        let frame = self.timeline.frame;
+        let doc = self.project.clips[self.timeline.clip].drawing_at_mut(frame);
+        let result = crate::path_editor::simplify::apply(
+            ctx,
+            doc,
+            &self.selection,
+            frame,
+            self.timeline.key_mode,
+        );
+        self.status = match result {
+            None => "No curve changes within the simplify tolerance.".into(),
+            Some(0) => "Smoothed selected paths and kept all anchors.".into(),
+            Some(1) => "Simplified selection. Removed 1 anchor.".into(),
+            Some(count) => format!("Simplified selection. Removed {count} anchors."),
+        };
+        if result.is_some() {
+            self.note(Action::EditPath);
+            self.timeline.leave_grid_selection();
+            self.finish_edit();
         }
     }
 
@@ -259,19 +308,47 @@ impl Editor {
             return;
         };
         if surface.secondary_clicked() {
-            if let Some(id) = at.and_then(|p| self.scene().hit_test(p, self.timeline.frame)) {
+            let scope = self.style.group_scope();
+            let hit = at.and_then(|p| self.scene().hit_test_in(p, self.timeline.frame, scope));
+            self.artwork_menu_group = hit.and_then(|id| {
+                self.scene()
+                    .objects
+                    .iter()
+                    .find(|o| o.id == id)
+                    .and_then(Group::of)
+            });
+            if let Some(id) = hit {
                 if !self.selection.contains(&id) {
-                    self.selection = editable_selection(self.scene(), &[id]);
+                    self.select_artwork(scope.resolve(self.scene(), &[id]));
                 }
             }
         }
         surface.context_menu(|ui| {
+            if self.style.group_edit.is_some() {
+                if ui
+                    .add(egui::Button::new("Exit group").shortcut_text("Esc"))
+                    .clicked()
+                {
+                    self.leave_group();
+                    ui.close_menu();
+                    ui.ctx().request_repaint();
+                }
+                ui.separator();
+            } else if let Some(group) = self.artwork_menu_group.filter(|&g| self.can_enter_group(g))
+            {
+                if ui.button("Enter group").clicked() {
+                    self.enter_group(group);
+                    ui.close_menu();
+                    ui.ctx().request_repaint();
+                }
+                ui.separator();
+            }
             for command in [Command::Copy, Command::PasteStyle, Command::Duplicate] {
                 self.artwork_command(ui, command);
             }
             ui.separator();
             self.group_commands(ui);
-            self.path_conversion_commands(ui);
+            self.path_edit_commands(ui);
             self.symbol_command(ui);
             if self.morph_action(ui, true) {
                 ui.close_menu();
@@ -331,6 +408,7 @@ impl Editor {
             self.timeline.frame,
             &mut self.selection,
             &name,
+            self.style.group_scope().group(),
         ) {
             Ok(message) => {
                 self.timeline.leave_grid_selection();

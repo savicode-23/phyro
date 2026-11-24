@@ -74,11 +74,7 @@ impl PointText {
             .clone()
             .insert(doc, self.layer, self.anchor, self.fill)?;
         if let Some(style) = &self.new_object_style {
-            let object = doc
-                .objects
-                .last_mut()
-                .expect("text insertion appends the glyph outlines");
-            style.paint_new_object(object);
+            style.paint_new_object(doc);
         }
         Ok(id)
     }

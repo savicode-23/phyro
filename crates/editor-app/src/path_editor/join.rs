@@ -2,6 +2,7 @@ use super::NodeSelection;
 use document_core::arrange::is_object_editable;
 use document_core::{path_edit, Document, PathNode, Shape, VectorObject, MAX_PATH_NODES};
 use eframe::egui::{self, Ui};
+use std::sync::Arc;
 
 fn open_nodes(o: &VectorObject) -> Option<&[PathNode]> {
     match &o.shape {
@@ -19,7 +20,7 @@ fn open_nodes(o: &VectorObject) -> Option<&[PathNode]> {
     }
 }
 
-pub(crate) fn show(ui: &mut Ui, doc: &mut Document, ids: &mut Vec<u64>, frame: u32) {
+pub(crate) fn show(ui: &mut Ui, doc: &mut Arc<Document>, ids: &mut Vec<u64>, frame: u32) {
     let index = |id: u64| {
         doc.objects
             .iter()
@@ -40,7 +41,7 @@ pub(crate) fn show(ui: &mut Ui, doc: &mut Document, ids: &mut Vec<u64>, frame: u
             .on_hover_text("Split an open path at the selected interior anchor")
             .clicked()
         {
-            let new = split(doc, i, node, frame);
+            let new = split(Arc::make_mut(doc), i, node, frame);
             ids.push(new);
         }
     } else if let [a, b] = ids.as_slice() {
@@ -56,7 +57,7 @@ pub(crate) fn show(ui: &mut Ui, doc: &mut Document, ids: &mut Vec<u64>, frame: u
             .on_hover_text("Connect nearest endpoints using the first path's paint and motion")
             .clicked()
         {
-            match join(doc, first, second, frame) {
+            match join(Arc::make_mut(doc), first, second, frame) {
                 Ok(()) => {
                     ids.truncate(1);
                     ui.data_mut(|d| d.remove::<String>(error_id));

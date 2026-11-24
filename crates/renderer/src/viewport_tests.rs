@@ -158,7 +158,15 @@ fn successive_isolated_paths_and_unbounded_symbols_match_fresh_full_layers() {
                     )
                     .unwrap();
                 } else {
-                    draw_object(&mut fresh, o, frame, transform, [0.; 2], 1.);
+                    draw_object(
+                        &mut fresh,
+                        o,
+                        frame,
+                        transform,
+                        [0.; 2],
+                        1.,
+                        Default::default(),
+                    );
                 }
                 let mask = appearance::mask(&expected, o, frame, transform).unwrap();
                 expected.draw_pixmap(
@@ -209,10 +217,26 @@ fn translucent_stenciled_strokes_match_a_full_surface_composite() {
     let actual = render_scaled(&doc, 0, scale).unwrap();
     let mut expected = Pixmap::new(actual.width(), actual.height()).unwrap();
     let transform = Transform::from_scale(scale, scale);
-    draw_object(&mut expected, &doc.objects[0], 0, transform, [0.; 2], 1.);
+    draw_object(
+        &mut expected,
+        &doc.objects[0],
+        0,
+        transform,
+        [0.; 2],
+        1.,
+        Default::default(),
+    );
     let mut layer = Pixmap::new(actual.width(), actual.height()).unwrap();
     let obj = &doc.objects[1];
-    draw_object(&mut layer, obj, 0, transform, [0.; 2], 1.);
+    draw_object(
+        &mut layer,
+        obj,
+        0,
+        transform,
+        [0.; 2],
+        1.,
+        Default::default(),
+    );
     let mask = appearance::mask(&expected, obj, 0, transform).unwrap();
     expected.draw_pixmap(
         0,

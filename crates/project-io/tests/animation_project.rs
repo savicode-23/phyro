@@ -223,6 +223,34 @@ fn archive_version(path: &Path) -> u32 {
 }
 
 #[test]
+fn blend_modes_round_trip_and_version_even_with_a_configured_grid() {
+    use document_core::{BlendMode, Document, GridVisibility};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("blend.vanim");
+    let mut doc = Document::default();
+    doc.add_rectangle([2.; 2], [8.; 2], [255; 4]);
+    let mut project = AnimationProject::from_document(doc.clone());
+    save_animation(&path, &project, false).unwrap();
+    assert_eq!(archive_version(&path), 5);
+    assert_eq!(load_animation(&path).unwrap().clips[0].drawing_at(0), &doc);
+
+    doc.layers[0].blend_mode = BlendMode::SoftLight;
+    project_io::save_project(&path, &doc).unwrap();
+    assert_eq!(archive_version(&path), 28);
+    assert_eq!(load_project(&path).unwrap(), doc);
+
+    let object = &mut doc.objects[0];
+    object.blend_mode = BlendMode::ColorDodge;
+    object.fill_blend_mode = BlendMode::Multiply;
+    object.stroke_blend_mode = BlendMode::Screen;
+    project = AnimationProject::from_document(doc);
+    project.grid.visibility = GridVisibility::Visible;
+    save_animation(&path, &project, true).unwrap();
+    assert_eq!(archive_version(&path), 28);
+    assert_eq!(load_animation(&path).unwrap(), project);
+}
+
+#[test]
 fn document_grids_round_trip_and_require_the_new_format() {
     use document_core::{GridKind, GridSettings, GridVisibility};
 

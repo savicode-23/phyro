@@ -1,4 +1,4 @@
-use super::Clipboard;
+use super::{Clipboard, SelectionScope};
 use document_core::{AnimationProject, SymbolDefinition, SymbolInstance, VectorObject};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -145,6 +145,7 @@ impl Clipboard {
             sessions,
         });
     }
+    #[cfg(test)]
     pub fn copy_project(
         &mut self,
         project: &AnimationProject,
@@ -152,7 +153,18 @@ impl Clipboard {
         frame: u32,
         ids: &[u64],
     ) {
-        self.copy(project.clips[clip].drawing_at(frame), ids, frame);
+        self.copy_project_in(project, clip, frame, ids, SelectionScope::Groups);
+    }
+
+    pub fn copy_project_in(
+        &mut self,
+        project: &AnimationProject,
+        clip: usize,
+        frame: u32,
+        ids: &[u64],
+        scope: SelectionScope,
+    ) {
+        self.copy_in(project.clips[clip].drawing_at(frame), ids, frame, scope);
         for (id, def) in &mut self.symbols {
             if let Some(actual) = project.symbols.get(id) {
                 def.name.clone_from(&actual.name);
@@ -265,12 +277,24 @@ impl Clipboard {
     }
 
     /// Publish artwork and any new definitions together after validating the composition.
+    #[cfg(test)]
     pub fn paste_project(
         &self,
         project: &mut AnimationProject,
         clip: usize,
         tick: u32,
         layer: u64,
+    ) -> Result<Vec<u64>, String> {
+        self.paste_project_in(project, clip, tick, layer, SelectionScope::Groups)
+    }
+
+    pub fn paste_project_in(
+        &self,
+        project: &mut AnimationProject,
+        clip: usize,
+        tick: u32,
+        layer: u64,
+        scope: SelectionScope,
     ) -> Result<Vec<u64>, String> {
         if let Some(source) = &self.clip_sources {
             if source.process != process_token()
@@ -298,6 +322,9 @@ impl Clipboard {
         }
         let drawing = dst.drawing_at_mut(tick);
         let ids = pasted.paste(drawing, layer);
+        if let Some(group) = scope.group() {
+            group.add_objects(drawing, &ids);
+        }
         let length = drawing.frames;
         dst.sync_layer_edits(&project.clips[clip], tick)?;
         if length != dst.frames {

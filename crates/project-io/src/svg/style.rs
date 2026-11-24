@@ -1,5 +1,5 @@
 use crate::invalid;
-use document_core::{LineCap, LineJoin};
+use document_core::{BlendMode, LineCap, LineJoin};
 use std::collections::BTreeMap;
 use std::io;
 
@@ -82,6 +82,7 @@ pub(super) struct Style {
     fill_opacity: f32,
     stroke_opacity: f32,
     pub(super) opacity: f32,
+    pub(super) blend_mode: BlendMode,
     pub(super) fill_ref: Option<String>,
     pub(super) stroke_ref: Option<String>,
     pub(super) clip_ref: Option<String>,
@@ -108,6 +109,7 @@ impl Default for Style {
             fill_opacity: 1.0,
             stroke_opacity: 1.0,
             opacity: 1.0,
+            blend_mode: BlendMode::Normal,
             fill_ref: None,
             stroke_ref: None,
             clip_ref: None,
@@ -200,6 +202,9 @@ impl Style {
         if !properties.contains_key("opacity") {
             self.opacity = 1.;
         }
+        if !properties.contains_key("mix-blend-mode") {
+            self.blend_mode = BlendMode::Normal;
+        }
         for (name, raw) in properties {
             let value = if raw.trim() == "initial" {
                 initial_value(name)
@@ -239,6 +244,12 @@ impl Style {
                 ("fill-opacity", _) => self.fill_opacity = opacity(value)?,
                 ("stroke-opacity", _) => self.stroke_opacity = opacity(value)?,
                 ("opacity", _) => self.opacity = opacity(value)?,
+                ("mix-blend-mode", _) => {
+                    self.blend_mode = BlendMode::ALL
+                        .into_iter()
+                        .find(|m| m.name() == value)
+                        .ok_or_else(|| invalid(format!("Unsupported SVG blend mode '{value}'.")))?;
+                }
                 ("mask" | "clip-path", _) => {
                     let reference =
                         if value == "none" {
@@ -274,7 +285,6 @@ impl Style {
                     | "marker-end" | "filter",
                     "none",
                 )
-                | ("mix-blend-mode", "normal")
                 | ("font-variation-settings", "normal")
                 | ("font-variant" | "font-stretch", "normal")
                 | ("writing-mode", "horizontal-tb" | "lr" | "lr-tb")

@@ -84,8 +84,17 @@ struct GroupPaint {
     start: usize,
     stencil: Option<(String, bool)>,
     opacity: f32,
+    blend_mode: document_core::BlendMode,
     ungrouped: bool,
     composite: bool,
+    paint_pair: Option<PaintPair>,
+}
+
+#[derive(Clone, Copy)]
+enum PaintPair {
+    Separate,
+    BlendedFill,
+    BlendedStroke,
 }
 
 struct PendingText {
@@ -357,6 +366,7 @@ fn check_attrs(tag: &str, attrs: &Attrs) -> io::Result<()> {
             "data-phyro-group",
             "data-phyro-ungrouped",
             "data-phyro-composite",
+            "data-phyro-paint-pair",
             "data-phyro-locked",
         ],
         "rect" => &["x", "y", "width", "height", "rx", "ry"],
@@ -456,6 +466,12 @@ impl Importer {
         let composite = attrs
             .get("data-phyro-composite")
             .is_some_and(|v| v == "true");
+        let paint_pair = match attrs.get("data-phyro-paint-pair").map(String::as_str) {
+            Some("true") => Some(PaintPair::Separate),
+            Some("fill") => Some(PaintPair::BlendedFill),
+            Some("stroke") => Some(PaintPair::BlendedStroke),
+            _ => None,
+        };
         if tag == "g" && !layer_group {
             ctx.style.apply_presentation(&attrs)?;
         } else {
@@ -465,6 +481,7 @@ impl Importer {
             return Err(invalid("Combined clipping and masking are unsupported."));
         }
         if matches!(tag, "g" | "svg") {
+            let object_blend = !layer_group && !ctx.style.blend_mode.is_normal();
             let mask = ctx.style.mask_ref.is_some();
             let stencil = ctx
                 .style
@@ -472,18 +489,23 @@ impl Importer {
                 .take()
                 .or_else(|| ctx.style.mask_ref.take())
                 .map(|id| (id, mask));
-            if stencil.is_some() || ctx.style.opacity != 1. || composite {
+            if stencil.is_some()
+                || ctx.style.opacity != 1.
+                || composite
+                || paint_pair.is_some()
+                || object_blend
+            {
                 if tag != "g" || layer_group {
-                    return Err(invalid(
-                        "Clips and masks on an SVG root or layer are unsupported.",
-                    ));
+                    return Err(invalid("Unsupported SVG compositing on a root or layer."));
                 }
                 ctx.group_paint = Some(GroupPaint {
                     start: self.doc.objects.len(),
                     stencil,
                     opacity: ctx.style.opacity,
+                    blend_mode: ctx.style.blend_mode,
                     ungrouped,
                     composite,
+                    paint_pair,
                 });
             }
         }
@@ -505,6 +527,7 @@ impl Importer {
             );
             self.plain_layer = None;
             ctx.layer = Some(id);
+            self.doc.layers.last_mut().unwrap().blend_mode = ctx.style.blend_mode;
             ctx.style.hidden = false;
         } else if ctx.style.hidden {
             return Err(invalid("SVG display:none is supported on layers only."));
@@ -522,7 +545,8 @@ impl Importer {
                 })
                 .unwrap_or(new_id);
             self.next_group = self.next_group.max(id);
-            if !ungrouped && !composite {
+            if !ungrouped && !composite && paint_pair.is_none() && ctx.style.blend_mode.is_normal()
+            {
                 // A native object has one logical group. Assign the nearest
                 // authoring group, keeping paint order and editable leaves.
                 // The context stack restores the parent for later siblings.
@@ -555,6 +579,10 @@ impl Importer {
                 }
             }
             ctx.style.opacity *= self.stack.last().expect("parent text").style.opacity;
+            // A single tspan supplies the text run; the outer text still owns compositing.
+            if ctx.style.blend_mode.is_normal() {
+                ctx.style.blend_mode = self.stack.last().expect("parent text").style.blend_mode;
+            }
             pending.line = Some((ctx.clone(), String::new()));
         } else if !matches!(tag, "svg" | "title" | "desc") {
             let layer = ctx.layer.unwrap_or_else(|| self.plain_layer());
@@ -567,7 +595,9 @@ impl Importer {
     fn finish_group(&mut self, paint: GroupPaint, transform: Matrix) -> io::Result<()> {
         use super::pressure_paint;
         let children = &self.doc.objects[paint.start..];
+        let blended = !paint.blend_mode.is_normal();
         if paint.stencil.is_some()
+            && !blended
             && children
                 .windows(2)
                 .any(|pair| pair[0].group != pair[1].group)
@@ -577,7 +607,61 @@ impl Importer {
             ));
         }
         let pressure = pressure_paint::paints(children, paint.ungrouped || paint.composite);
-        if paint.composite || paint.opacity != 1. || paint.ungrouped && pressure {
+        if let Some(pair) = paint.paint_pair {
+            let [fill, stroke] = children else {
+                return Err(invalid("An SVG paint pair needs a fill and a stroke."));
+            };
+            if fill.layer != stroke.layer
+                || fill.group != stroke.group
+                || fill.shape != stroke.shape
+                || fill.position != stroke.position
+                || fill.size != stroke.size
+                || fill.rotation != stroke.rotation
+                || fill.scale != stroke.scale
+                || fill.opacity != stroke.opacity
+                || fill.is_instance()
+                || stroke.is_instance()
+                || fill.image.is_some()
+                || stroke.image.is_some()
+                || fill.stencil.is_some()
+                || stroke.stencil.is_some()
+                || !fill.no_stroke
+                || !stroke.no_fill
+            {
+                return Err(invalid("The SVG fill and stroke must share one outline."));
+            }
+            let stroke = self.doc.objects.pop().unwrap();
+            let fill = &mut self.doc.objects[paint.start];
+            fill.fill_blend_mode = fill.blend_mode;
+            fill.stroke_blend_mode = stroke.blend_mode;
+            fill.blend_mode = paint.blend_mode;
+            match pair {
+                PaintPair::Separate => {}
+                PaintPair::BlendedFill => {
+                    fill.fill_blend_mode = paint.blend_mode;
+                    fill.blend_mode = Default::default();
+                }
+                PaintPair::BlendedStroke => {
+                    fill.stroke_blend_mode = paint.blend_mode;
+                    fill.blend_mode = Default::default();
+                }
+            }
+            fill.opacity *= paint.opacity;
+            fill.no_stroke = stroke.no_stroke;
+            fill.stroke = stroke.stroke;
+            fill.stroke_gradient = stroke.stroke_gradient;
+            fill.stroke_width = stroke.stroke_width;
+            fill.cap = stroke.cap;
+            fill.join = stroke.join;
+        } else if blended {
+            if children.is_empty() {
+                return Ok(());
+            }
+            let children = self.doc.objects.split_off(paint.start);
+            let mut object = pressure_paint::composite(children, paint.opacity)?;
+            object.blend_mode = paint.blend_mode;
+            self.doc.objects.push(object);
+        } else if paint.composite || paint.opacity != 1. || paint.ungrouped && pressure {
             if !pressure {
                 return Err(invalid("Unsupported SVG group paint or opacity."));
             }
@@ -621,6 +705,7 @@ impl Importer {
             name: name.into(),
             visible,
             locked,
+            blend_mode: Default::default(),
         });
         id
     }
@@ -651,7 +736,12 @@ impl Importer {
         if !(sx > 0. && sy > 0.) {
             return Err(invalid("Degenerate SVG transform."));
         }
-        let bbox = ctx.style.uses_object_bbox();
+        let bbox = ctx.style.uses_object_bbox()
+            || self
+                .stack
+                .last()
+                .and_then(|parent| parent.group_paint.as_ref())
+                .is_some_and(|paint| paint.paint_pair.is_some());
         let [a, b, c, d, _, _] = ctx.transform.0;
         if bbox && !orthogonal {
             return Err(invalid("Sheared SVG paint bounds are unsupported."));
@@ -846,6 +936,7 @@ impl Importer {
         object.fill_rule = ctx.style.fill_rule;
         object.text = editable;
         object.opacity = ctx.style.opacity;
+        object.blend_mode = ctx.style.blend_mode;
         object.stroke = stroke;
         object.stroke_width = ctx.style.stroke_width * sx;
         object.cap = ctx.style.cap;

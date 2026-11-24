@@ -6,7 +6,9 @@ use document_core::{
 };
 use eframe::egui::{self, Button, DragValue, Ui};
 use std::borrow::Cow;
+use std::sync::Arc;
 mod selection;
+pub(crate) mod simplify;
 use selection::NodeSelection;
 pub(crate) use selection::{selected_nodes, set_nodes, NodeSet};
 
@@ -195,26 +197,32 @@ pub(crate) fn convert_to_path(object: &mut VectorObject) -> bool {
     true
 }
 
-pub fn show(ui: &mut Ui, obj: &mut VectorObject, frame: u32, mode: KeyMode) -> bool {
+pub fn show(ui: &mut Ui, doc: &mut Arc<Document>, index: usize, frame: u32, mode: KeyMode) {
+    let obj = &doc.objects[index];
     if obj.text.is_some() || !crate::commands::has_vector_paint(obj) {
-        return false;
+        return;
     }
-    let mut changed = false;
     if !obj.shape.contours().is_empty() {
         ui.collapsing("Path effects", |ui| {
-            changed |= effects(ui, obj);
+            let mut edited = doc.objects[index].effects.clone();
+            effects(ui, &mut edited);
+            if edited != doc.objects[index].effects {
+                Arc::make_mut(doc).objects[index].effects = edited;
+            }
         });
     }
     ui.collapsing("Path nodes", |ui| {
-        if obj.shape.contours().is_empty() {
+        if doc.objects[index].shape.contours().is_empty() {
             if ui
                 .button("Convert to path")
                 .on_hover_text("Replace the primitive with editable cubic nodes")
                 .clicked()
             {
-                changed |= convert_to_path(obj);
+                convert_to_path(&mut Arc::make_mut(doc).objects[index]);
             }
         } else {
+            let mut edited_object = doc.objects[index].clone();
+            let obj = &mut edited_object;
             let keyed = Property::Geometry.last(obj).is_some() || mode == KeyMode::Auto;
             if keyed {
                 let mut pose = obj.shape_at(frame).into_owned();
@@ -226,7 +234,7 @@ pub fn show(ui: &mut Ui, obj: &mut VectorObject, frame: u32, mode: KeyMode) -> b
                     .inner;
                 std::mem::swap(&mut pose, &mut obj.shape);
                 if edited && mode.prepare(obj, frame, Property::Geometry) {
-                    changed |= obj.set_shape_at(frame, pose).is_ok();
+                    let _ = obj.set_shape_at(frame, pose);
                 }
                 if obj.animated.guided_geometry.is_some() {
                     ui.weak("Use Guided morph to change how outline points match between poses.");
@@ -234,14 +242,16 @@ pub fn show(ui: &mut Ui, obj: &mut VectorObject, frame: u32, mode: KeyMode) -> b
                     ui.weak("Geometry keys share the same contour and node order.");
                 }
             } else {
-                changed |= edit_nodes(ui, obj, frame, mode);
+                edit_nodes(ui, obj, frame, mode);
             }
             if obj.skin.is_some() {
                 ui.weak("Detach the path in Skeleton to change its node count or order.");
             }
+            if edited_object != doc.objects[index] {
+                Arc::make_mut(doc).objects[index] = edited_object;
+            }
         }
     });
-    changed
 }
 
 fn edit_nodes(ui: &mut Ui, obj: &mut VectorObject, frame: u32, mode: KeyMode) -> bool {
@@ -475,40 +485,35 @@ pub(crate) fn transform_posed_nodes(
     changed
 }
 
-fn effects(ui: &mut Ui, obj: &mut VectorObject) -> bool {
-    let mut changed = false;
-    let count = obj.effects.len();
+fn effects(ui: &mut Ui, effects: &mut Vec<PathEffect>) {
+    let count = effects.len();
     let mut remove = None;
     let mut reorder = None;
-    for (i, effect) in obj.effects.iter_mut().enumerate() {
+    for (i, effect) in effects.iter_mut().enumerate() {
         ui.push_id(i, |ui| {
             ui.horizontal_wrapped(|ui| match effect {
                 PathEffect::Mirror { horizontal } => {
                     ui.label("Mirror");
-                    changed |= ui.selectable_value(horizontal, true, "X").changed();
-                    changed |= ui.selectable_value(horizontal, false, "Y").changed();
+                    ui.selectable_value(horizontal, true, "X");
+                    ui.selectable_value(horizontal, false, "Y");
                 }
                 PathEffect::RoundCorners { distance } => {
                     ui.label("Round corners");
-                    changed |= ui
-                        .add(
-                            DragValue::new(distance)
-                                .range(0.0..=4096.)
-                                .speed(0.1)
-                                .suffix(" px"),
-                        )
-                        .changed();
+                    ui.add(
+                        DragValue::new(distance)
+                            .range(0.0..=4096.)
+                            .speed(0.1)
+                            .suffix(" px"),
+                    );
                 }
                 PathEffect::Simplify { tolerance } => {
                     ui.label("Simplify");
-                    changed |= ui
-                        .add(
-                            DragValue::new(tolerance)
-                                .range(0.0..=4096.)
-                                .speed(0.05)
-                                .suffix(" px"),
-                        )
-                        .changed();
+                    ui.add(
+                        DragValue::new(tolerance)
+                            .range(0.0..=4096.)
+                            .speed(0.05)
+                            .suffix(" px"),
+                    );
                 }
             });
             ui.horizontal_wrapped(|ui| {
@@ -528,14 +533,11 @@ fn effects(ui: &mut Ui, obj: &mut VectorObject) -> bool {
         });
     }
     if let Some(i) = remove {
-        obj.effects.remove(i);
-        changed = true;
+        effects.remove(i);
+    } else if let Some((i, j)) = reorder {
+        effects.swap(i, j);
     }
-    if let Some((i, j)) = reorder {
-        obj.effects.swap(i, j);
-        changed = true;
-    }
-    ui.add_enabled_ui(obj.effects.len() < MAX_EFFECTS, |ui| {
+    ui.add_enabled_ui(effects.len() < MAX_EFFECTS, |ui| {
         ui.menu_button("Add effect", |ui| {
             for (label, effect) in [
                 ("Round corners", PathEffect::RoundCorners { distance: 4. }),
@@ -543,14 +545,12 @@ fn effects(ui: &mut Ui, obj: &mut VectorObject) -> bool {
                 ("Simplify", PathEffect::Simplify { tolerance: 0.5 }),
             ] {
                 if ui.button(label).clicked() {
-                    obj.effects.push(effect);
-                    changed = true;
+                    effects.push(effect);
                     ui.close_menu();
                 }
             }
         });
     });
-    changed
 }
 mod join;
 pub(crate) use join::show as split_or_join;

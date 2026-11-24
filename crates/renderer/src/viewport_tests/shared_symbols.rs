@@ -62,9 +62,10 @@ fn independent_artwork_paints_and_picks_beyond_its_placement_box() {
     let image = render(&independent, 0).unwrap();
     assert_eq!(image.pixel(118, 32).unwrap().alpha(), 255);
     assert!(image.data() == render(&linked, 0).unwrap().data());
-    let (crop, origin) = render_artwork(&independent.paint_order(), 0, 1).unwrap();
+    let (crop, origin) =
+        render_artwork(&independent.paint_order(), &independent.layers, 0, 1).unwrap();
     assert_eq!((origin, crop.width(), crop.height()), ([116, 30], 28, 12));
-    let (linked_crop, _) = render_artwork(&linked.paint_order(), 0, 1).unwrap();
+    let (linked_crop, _) = render_artwork(&linked.paint_order(), &linked.layers, 0, 1).unwrap();
     assert!(crop.data() == linked_crop.data());
 }
 

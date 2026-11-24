@@ -1,18 +1,22 @@
 //! Editor transactions and selection commands. IDs in the selection refer to authored objects.
 
-use document_core::{AnimationProject, Document, Layer, Shape, Skeleton, VectorObject};
+use document_core::{
+    arrange::SelectionScope, AnimationProject, Document, Layer, Shape, Skeleton, VectorObject,
+};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::mem::{self, size_of};
 use std::sync::Arc;
 mod clipboard_symbols;
 mod paste_style;
+#[cfg(test)]
 pub(crate) use paste_style::has_style_target;
+pub(crate) use paste_style::has_style_target_in;
 
 pub(crate) fn has_vector_paint(object: &VectorObject) -> bool {
     !object.is_instance() && object.image.is_none()
 }
 mod stacking;
-pub use stacking::{arrange, Arrange};
+pub use stacking::{arrange_in, Arrange};
 #[cfg(test)]
 mod history_tests;
 
@@ -142,37 +146,43 @@ impl History {
     fn finish_transaction(&mut self) {
         self.revision += 1;
         const BUDGET: usize = 64 * 1024 * 1024;
-        loop {
-            // A reviewed batch can span multiple independent clips. Keep its single
-            // undo/redo entry even if this snapshot uses the entire history budget.
-            if self.past.len() + self.future.len() == 1
-                && self
-                    .past
-                    .front()
-                    .or(self.future.front())
-                    .is_some_and(|entry| entry.reviewed)
-            {
+        self.trim_to_budget(BUDGET);
+    }
+
+    fn trim_to_budget(&mut self, budget: usize) {
+        const MAX_ENTRIES: usize = 128;
+        let single = self.past.len() + self.future.len() == 1;
+        let mut seen = HashSet::new();
+        let mut remaining = budget;
+        let mut kept = 0;
+        // Retain the same contiguous history obtained by evicting the oldest undo
+        // entries first, then the farthest redo entries. Count each shared allocation once.
+        for entry in self
+            .future
+            .iter()
+            .rev()
+            .chain(self.past.iter().rev())
+            .take(MAX_ENTRIES)
+        {
+            if single && entry.reviewed {
+                return;
+            }
+            let bytes = entry.edit.bytes(&mut seen);
+            if bytes > remaining {
+                // A reviewed batch keeps its single undo/redo entry even if it
+                // uses the entire history budget.
+                if kept == 0 && entry.reviewed {
+                    kept = 1;
+                }
                 break;
             }
-            let mut seen = HashSet::new();
-            let bytes: usize = self
-                .past
-                .iter()
-                .chain(&self.future)
-                .map(|item| item.edit.bytes(&mut seen))
-                .sum();
-            if bytes <= BUDGET && self.past.len() + self.future.len() <= 128 {
-                break;
-            }
-            if self
-                .past
-                .pop_front()
-                .or_else(|| self.future.pop_front())
-                .is_none()
-            {
-                break;
-            }
+            remaining -= bytes;
+            kept += 1;
         }
+        let keep_future = kept.min(self.future.len());
+        let keep_past = kept - keep_future;
+        self.past.drain(..self.past.len() - keep_past);
+        self.future.drain(..self.future.len() - keep_future);
     }
 }
 
@@ -257,32 +267,40 @@ impl ProjectEdit {
                     bytes +=
                         128 + symbol.name.capacity() + shared_document_bytes(&symbol.artwork, seen);
                 }
-                for clip in &project.clips {
-                    bytes += clip
-                        .events
-                        .values()
-                        .map(|names| {
-                            64 + names.capacity() * size_of::<String>()
-                                + names.iter().map(String::capacity).sum::<usize>()
-                        })
-                        .sum::<usize>();
-                    bytes += clip.name.capacity() + clip.cels.len() * 128;
-                    if !clip.layer_starts.is_empty() {
-                        // Sparse owner sets have a tree leaf even for a single layer.
-                        // Include room for the lazily built per-layer lookup arrays.
-                        bytes += clip.cels.len() * size_of::<u32>();
-                        for owners in clip.layer_starts.values() {
-                            bytes += 160 + owners.len() * (size_of::<u64>() + 2 * size_of::<u32>());
-                        }
-                    }
-                    for doc in clip.cels.values() {
-                        bytes += shared_document_bytes(doc, seen);
-                    }
-                }
+                bytes += project
+                    .clips
+                    .iter()
+                    .map(|clip| clip_heap_bytes(clip, seen))
+                    .sum::<usize>();
                 bytes
             }
         }
     }
+}
+
+fn clip_heap_bytes(clip: &document_core::Clip, seen: &mut HashSet<*const ()>) -> usize {
+    let mut bytes = clip.name.capacity() + clip.cels.len() * 128;
+    bytes += clip
+        .events
+        .values()
+        .map(|names| {
+            64 + names.capacity() * size_of::<String>()
+                + names.iter().map(String::capacity).sum::<usize>()
+        })
+        .sum::<usize>();
+    if !clip.layer_starts.is_empty() {
+        // Include sparse owner sets and their lazily built per-layer lookup arrays.
+        bytes += clip.cels.len() * size_of::<u32>();
+        for owners in clip.layer_starts.values() {
+            bytes += 160 + owners.len() * (size_of::<u64>() + 2 * size_of::<u32>());
+        }
+    }
+    bytes
+        + clip
+            .cels
+            .values()
+            .map(|doc| shared_document_bytes(doc, seen))
+            .sum::<usize>()
 }
 
 fn skeleton_heap_bytes(skeleton: &Skeleton) -> usize {
@@ -387,13 +405,9 @@ fn object_heap_bytes(object: &VectorObject, seen: &mut HashSet<*const ()>) -> us
             .clip_instance
             .as_ref()
             .and_then(|i| i.shared_clip())
+            .filter(|clip| seen.insert(Arc::as_ptr(clip).cast()))
             .map_or(0, |clip| {
-                clip.cels.len() * 128
-                    + clip
-                        .cels
-                        .values()
-                        .map(|d| shared_document_bytes(d, seen))
-                        .sum::<usize>()
+                size_of::<document_core::Clip>() + clip_heap_bytes(clip, seen)
             })
         + shape_bytes(&object.shape)
         + object.skin.as_ref().map_or(0, |skin| {
@@ -676,6 +690,7 @@ pub fn add_layer_with_id(doc: &mut Document, id: u64) -> u64 {
         name: format!("Layer {id}"),
         visible: true,
         locked: false,
+        blend_mode: Default::default(),
     });
     id
 }
@@ -753,13 +768,23 @@ pub(crate) fn group(doc: &mut Document, ids: &[u64]) {
     GroupAction::Group.apply(doc, &mut ids.to_vec());
 }
 
+#[cfg(test)]
 pub fn delete(doc: &mut Document, ids: &[u64]) {
-    let selected: HashSet<_> = editable_selection(doc, ids).into_iter().collect();
+    delete_in(doc, ids, Default::default());
+}
+
+pub fn delete_in(doc: &mut Document, ids: &[u64], scope: SelectionScope) {
+    let selected: HashSet<_> = scope.resolve(doc, ids).into_iter().collect();
     doc.objects.retain(|o| !selected.contains(&o.id));
 }
 
+#[cfg(test)]
 pub fn duplicate(doc: &mut Document, ids: &[u64]) -> Vec<u64> {
-    let selected = editable_selection(doc, ids);
+    duplicate_in(doc, ids, Default::default())
+}
+
+pub fn duplicate_in(doc: &mut Document, ids: &[u64], scope: SelectionScope) -> Vec<u64> {
+    let selected = scope.resolve(doc, ids);
     if selected.is_empty() {
         return Vec::new();
     }
@@ -777,7 +802,14 @@ pub fn duplicate(doc: &mut Document, ids: &[u64]) -> Vec<u64> {
         }
         let mut copy = source.clone();
         copy.id = take_free_id(&mut doc.next_id, &mut used_ids);
-        copy.group = groups.for_object(source);
+        match scope {
+            SelectionScope::Groups => copy.group = groups.for_object(source),
+            SelectionScope::Objects => {
+                copy.group = None;
+                copy.group_name = None;
+            }
+            SelectionScope::InGroup(_) => {}
+        }
         copy_ids.push(copy.id);
         // Appending keeps copies on their original layers and preserves their paint order.
         doc.objects.push(copy);
@@ -956,8 +988,13 @@ impl Clipboard {
         Some(decoded)
     }
 
+    #[cfg(test)]
     pub fn copy(&mut self, doc: &Document, ids: &[u64], frame: u32) {
-        let selected: HashSet<_> = editable_selection(doc, ids).into_iter().collect();
+        self.copy_in(doc, ids, frame, SelectionScope::Groups);
+    }
+
+    fn copy_in(&mut self, doc: &Document, ids: &[u64], frame: u32, scope: SelectionScope) {
+        let selected: HashSet<_> = scope.resolve(doc, ids).into_iter().collect();
         if !selected.is_empty() {
             self.objects = doc
                 .paint_order()
@@ -967,6 +1004,10 @@ impl Clipboard {
                 .map(|mut object| {
                     // Bone IDs are drawing-local. Carry the posed artwork into other drawings.
                     object.release_rig_at(frame);
+                    if scope != SelectionScope::Groups {
+                        object.group = None;
+                        object.group_name = None;
+                    }
                     object
                 })
                 .collect();

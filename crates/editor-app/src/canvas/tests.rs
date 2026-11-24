@@ -30,7 +30,7 @@ fn drag_texture_shares_the_staged_drawing_snapshot() {
     let snapshot = std::sync::Arc::new(draft);
     let _ = s.ctx.run(Default::default(), |ctx| {
         s.canvas
-            .artwork_texture(ctx, &s.doc, 0, 1., Some(&snapshot))
+            .artwork_texture(ctx, &Arc::new(s.doc.clone()), 0, 1., Some(&snapshot))
             .unwrap();
     });
     assert!(std::sync::Arc::ptr_eq(
@@ -38,6 +38,68 @@ fn drag_texture_shares_the_staged_drawing_snapshot() {
         &s.canvas.texture.as_ref().unwrap().document
     ));
     assert!(s.doc.objects.is_empty());
+}
+
+#[test]
+fn canvas_keeps_the_authored_snapshot_until_a_gesture_commits() {
+    let mut session = CanvasSession::new(Tool::Select);
+    let mut drawing = Document::default();
+    let id = drawing.add_rectangle([30.; 2], [70.; 2], [255; 4]);
+    let before = Arc::new(drawing);
+    let mut authored = Arc::clone(&before);
+    let paint = |session: &mut CanvasSession, drawing: &mut Arc<Document>, events| {
+        session
+            .paint_drawing(
+                drawing,
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::splat(400.))),
+                    events,
+                    ..Default::default()
+                },
+            )
+            .0
+    };
+    assert!(!paint(&mut session, &mut authored, vec![]));
+    let view = session.canvas.context_surface.as_ref().unwrap().1;
+    let start = view.screen(egui::pos2(64., 64.));
+    let end = start + egui::vec2(18., 8.);
+    let button = |pos, pressed| egui::Event::PointerButton {
+        pos,
+        pressed,
+        button: egui::PointerButton::Primary,
+        modifiers: egui::Modifiers::NONE,
+    };
+    assert!(!paint(
+        &mut session,
+        &mut authored,
+        vec![egui::Event::PointerMoved(start)]
+    ));
+    assert!(Arc::ptr_eq(&before, &authored));
+    assert!(Arc::ptr_eq(
+        &authored,
+        session.canvas.texture.as_ref().unwrap().authored()
+    ));
+    assert!(!paint(
+        &mut session,
+        &mut authored,
+        vec![button(start, true)]
+    ));
+    assert_eq!(session.selected, [id]);
+    assert!(!paint(
+        &mut session,
+        &mut authored,
+        vec![egui::Event::PointerMoved(end)]
+    ));
+    assert!(Arc::ptr_eq(&before, &authored));
+    let staged = Arc::clone(session.canvas.texture.as_ref().unwrap().authored());
+    assert_ne!(staged.objects[0].position, before.objects[0].position);
+    assert!(paint(&mut session, &mut authored, vec![button(end, false)]));
+    assert!(Arc::ptr_eq(&authored, &staged));
+    assert_ne!(authored.objects[0].position, before.objects[0].position);
+    assert!(Arc::ptr_eq(
+        &authored,
+        session.canvas.texture.as_ref().unwrap().authored()
+    ));
 }
 
 impl CanvasSession {
@@ -67,20 +129,31 @@ impl CanvasSession {
     }
 
     fn paint(&mut self, input: egui::RawInput) -> (bool, egui::FullOutput) {
+        let mut authored = Arc::new(std::mem::take(&mut self.doc));
+        let painted = self.paint_drawing(&mut authored, input);
+        self.doc = Arc::unwrap_or_clone(authored);
+        painted
+    }
+
+    fn paint_drawing(
+        &mut self,
+        authored: &mut Arc<Document>,
+        input: egui::RawInput,
+    ) -> (bool, egui::FullOutput) {
         let mut changed = false;
         let ctx = self.ctx.clone();
-        let mut authored = std::sync::Arc::new(std::mem::take(&mut self.doc));
         let output = ctx.run(input, |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 changed |= self
                     .canvas
                     .show(
                         ui,
-                        &mut authored,
+                        authored,
                         self.timeline.frame,
                         self.tool,
                         &mut self.selected,
                         &CanvasStyle {
+                            group_edit: None,
                             edit_motion: self.edit_motion,
                             key_mode: self.timeline.key_mode,
                             fill: [255; 4],
@@ -101,7 +174,6 @@ impl CanvasSession {
                     .unwrap();
             });
         });
-        self.doc = std::sync::Arc::unwrap_or_clone(authored);
         (changed, output)
     }
 
@@ -786,7 +858,7 @@ fn pen_closes_within_the_same_screen_radius_at_different_zooms_and_densities() {
 #[test]
 fn shift_removes_only_the_picked_group_and_preserves_the_remaining_order() {
     use crate::commands;
-    let canvas = Canvas::default();
+    let mut canvas = Canvas::default();
     let mut doc = Document::default();
     let a = doc.add_rectangle([10.; 2], [9.; 2], [255; 4]);
     let b = doc.add_rectangle([30.; 2], [8.; 2], [255; 4]);
@@ -815,7 +887,17 @@ fn shift_removes_only_the_picked_group_and_preserves_the_remaining_order() {
         }
     }
     let mut selected = vec![other, b, cutter, a];
-    let pick = |ids: &mut Vec<u64>| canvas.select(&doc, 0, egui::pos2(14., 14.), ids, true, 1.);
+    let mut pick = |ids: &mut Vec<u64>| {
+        canvas.select(
+            &doc,
+            0,
+            egui::pos2(14., 14.),
+            ids,
+            true,
+            1.,
+            SelectionScope::Groups,
+        )
+    };
     assert!(pick(&mut selected).is_none());
     assert_eq!(selected, [other, cutter]);
     assert!(matches!(pick(&mut selected), Some(Gesture::Move { .. })));
@@ -830,6 +912,7 @@ fn picking_a_group_keeps_dragging_while_ui_switches_layer() {
         name: "Body".into(),
         visible: true,
         locked: false,
+        blend_mode: Default::default(),
     });
     let a = s
         .doc
@@ -889,6 +972,7 @@ fn resizing_rotated_shape_keeps_its_opposite_corner_fixed() {
         offset: Vec2::ZERO,
     };
     let style = CanvasStyle {
+        group_edit: None,
         edit_motion: false,
         key_mode: Default::default(),
         fill: [255; 4],
@@ -939,6 +1023,7 @@ fn group_targets_preserve_key_gating_geometry_and_clipboard_order() {
     let selected = editable_selection(&doc, &requested);
     assert_eq!(selected, [second, first]);
     let mut style = CanvasStyle {
+        group_edit: None,
         edit_motion: false,
         key_mode: KeyMode::Manual,
         fill: [255; 4],
@@ -1049,6 +1134,7 @@ fn resize_and_rotate_handles_edit_the_evaluated_tracks() {
     let start = Pos2::from(object.local_to_world([1., 1.], 2));
     let desired = start + egui::vec2(5., 7.);
     let style = CanvasStyle {
+        group_edit: None,
         edit_motion: false,
         key_mode: Default::default(),
         fill: [255; 4],

@@ -1,9 +1,11 @@
 use crate::{
     arrange::is_object_editable, geometry::editable_contours, Document, FillRule, Gradient,
-    GradientKind, Shape, VectorObject,
+    GradientKind, Shape, VectorObject, MAX_OBJECT_NAME_CHARS,
 };
 use std::collections::HashSet;
 use tiny_skia_path::{Point, Transform};
+
+const STROKE_NAME_SUFFIX: &str = " stroke";
 
 pub fn has_convertible_stroke(object: &VectorObject, frame: u32) -> bool {
     !object.is_instance() && object.image.is_none() && object.has_stroke_at(frame)
@@ -37,7 +39,12 @@ pub fn stroke_to_paths(
         if keep_fill {
             let fill = &mut staged.objects[i];
             clear_stroke(fill);
-            outline.name = format!("{} stroke", fill.display_name());
+            outline.name = fill
+                .display_name()
+                .chars()
+                .take(MAX_OBJECT_NAME_CHARS - STROKE_NAME_SUFFIX.len())
+                .chain(STROKE_NAME_SUFFIX.chars())
+                .collect();
             outline.id = staged.add_shape(
                 outline.position,
                 outline.size,
@@ -63,6 +70,7 @@ fn clear_stroke(object: &mut VectorObject) {
     object.no_stroke = true;
     object.stroke_width = 0.;
     object.stroke_gradient = None;
+    object.stroke_blend_mode = Default::default();
     object.stroke_profile.clear();
 }
 
@@ -104,6 +112,7 @@ fn stroke_path(object: &VectorObject, frame: u32) -> Result<VectorObject, String
     result.fill_rule = FillRule::NonZero;
     result.no_fill = false;
     result.fill = object.stroke_at(frame);
+    result.fill_blend_mode = object.stroke_blend_mode;
     result.gradient = object
         .stroke_gradient
         .as_ref()
@@ -164,4 +173,25 @@ fn remap_gradient(gradient: &Gradient, old: Transform, new: Transform) -> Result
         kind,
         stops: gradient.stops.clone(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_filled_object_with_a_maximum_length_name_keeps_its_fill_and_outline() {
+        let mut doc = Document::default();
+        let id = doc.add_rectangle([10.; 2], [40.; 2], [255; 4]);
+        let name = "ä".repeat(MAX_OBJECT_NAME_CHARS);
+        doc.objects[0].name = name.clone();
+        doc.objects[0].stroke_width = 4.;
+
+        let ids = stroke_to_paths(&mut doc, &[id], 0).unwrap();
+        assert_eq!(ids, [id, doc.objects[1].id]);
+        assert_eq!(doc.objects[0].name, name);
+        assert_eq!(doc.objects[1].name.chars().count(), MAX_OBJECT_NAME_CHARS);
+        assert!(doc.objects[1].name.ends_with(STROKE_NAME_SUFFIX));
+        assert!(doc.validate().is_ok());
+    }
 }

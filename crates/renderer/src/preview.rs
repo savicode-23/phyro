@@ -137,6 +137,24 @@ impl DragPreview {
             objects[slot] = replacement;
             Some(slot)
         });
+        if preview
+            .layers
+            .iter()
+            .any(|layer| !layer.blend_mode.is_normal())
+        {
+            // Cached prefixes and suffixes can split an isolated blend layer.
+            let page = artboard(preview, frame, scale)?;
+            let mut pixels = page.allocate()?;
+            crate::clip_groups::paint_with_layers(
+                &mut pixels,
+                crate::clip_groups::runs(objects.into_iter(), frame),
+                &preview.layers,
+                (frame, page.transform, [0.; 2]),
+                Some(&mut crate::bounds::SymbolBounds::new()),
+                crate::RenderPurpose::Editor,
+            )?;
+            return Ok(pixels);
+        }
         let size = [preview.width, preview.height];
         let background = self.background.as_ref().filter(|bg| {
             bg.frame == frame

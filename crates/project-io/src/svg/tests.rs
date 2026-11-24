@@ -3,6 +3,57 @@ use document_core::{LineCap, LineJoin, Shape};
 use std::fs;
 
 #[test]
+fn svg_blending_keeps_layers_objects_and_editable_paint_channels() {
+    use document_core::{BlendMode, Document, Gradient, GradientKind, Layer};
+
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("blend.svg");
+    let mut doc = Document::default();
+    doc.add_rectangle([0.; 2], [96.; 2], [160, 111, 145, 255]);
+    doc.layers.push(Layer {
+        id: 2,
+        name: "Lighting".into(),
+        blend_mode: BlendMode::Screen,
+        ..Layer::default()
+    });
+    doc.add_shape([20.; 2], [40.; 2], [180, 175, 91, 255], Shape::Rectangle, 2);
+    let object = &mut doc.objects[1];
+    object.name = "Light".into();
+    object.blend_mode = BlendMode::Overlay;
+    object.fill_blend_mode = BlendMode::Multiply;
+    object.stroke_blend_mode = BlendMode::Difference;
+    object.opacity = 0.56;
+    object.stroke_width = 6.;
+    object.stroke = [61, 15, 10, 255];
+    object.gradient = Some(Gradient::from_color(
+        GradientKind::Linear {
+            start: [0.; 2],
+            end: [1.; 2],
+        },
+        [120, 60, 200, 245],
+    ));
+    export_svg(&file, &doc, 0, false).unwrap();
+    let svg = fs::read_to_string(&file).unwrap();
+    for mode in ["screen", "overlay", "multiply", "difference"] {
+        assert!(svg.contains(&format!("style=\"mix-blend-mode:{mode}\"")));
+    }
+    let restored = import_svg(&file).unwrap();
+    assert_eq!(restored.layers[1].blend_mode, BlendMode::Screen);
+    assert_eq!(restored.objects.len(), 2);
+    let light = &restored.objects[1];
+    assert_eq!(light.name, "Light");
+    assert_eq!(light.blend_mode, BlendMode::Overlay);
+    assert_eq!(light.fill_blend_mode, BlendMode::Multiply);
+    assert_eq!(light.stroke_blend_mode, BlendMode::Difference);
+    assert_eq!(light.opacity, 0.56);
+    assert!(light.gradient.is_some());
+    assert_eq!(
+        renderer::render(&restored, 0).unwrap().data(),
+        renderer::render(&doc, 0).unwrap().data()
+    );
+}
+
+#[test]
 fn svg_preserves_none_and_fully_transparent_paint_independently() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("paints.svg");

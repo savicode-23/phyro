@@ -39,10 +39,33 @@ pub(super) struct Frame {
     tick: u32,
     longest: u32,
 }
+
+impl Frame {
+    fn same_view(&self, other: &Self) -> bool {
+        (self.clip, self.tick, self.longest) == (other.clip, other.tick, other.longest)
+    }
+}
+
 struct Version<T> {
     key: Frame,
     project: Project,
     images: [T; 2],
+}
+
+enum PreviewImage {
+    Rendered(egui::ColorImage),
+    Cached(egui::TextureHandle),
+}
+
+impl PreviewImage {
+    fn into_texture(self, ctx: &egui::Context) -> egui::TextureHandle {
+        match self {
+            Self::Rendered(image) => {
+                ctx.load_texture("draft preview", image, egui::TextureOptions::LINEAR)
+            }
+            Self::Cached(texture) => texture,
+        }
+    }
 }
 
 pub(super) struct Draft {
@@ -57,7 +80,7 @@ pub(super) struct Draft {
     count: usize,
     sealed: bool,
     pinned: Option<usize>,
-    running: Option<mpsc::Receiver<(Frame, Reply<Version<egui::ColorImage>>)>>,
+    running: Option<mpsc::Receiver<(Frame, Reply<Version<PreviewImage>>)>>,
     shown: Option<Version<egui::TextureHandle>>,
     failed: Option<(Frame, Value)>,
 }
@@ -309,8 +332,11 @@ impl Draft {
 
     fn preview(&mut self, ctx: &egui::Context, target: Frame) {
         // Freeze the visible version across the press/release that chooses Keep.
-        if ctx.input(|i| i.pointer.any_down() || i.pointer.any_released()) {
-            ctx.request_repaint();
+        let (down, released) = ctx.input(|i| (i.pointer.any_down(), i.pointer.any_released()));
+        if down || released {
+            if released {
+                ctx.request_repaint();
+            }
             return;
         }
         if let Some(job) = &self.running {
@@ -324,13 +350,7 @@ impl Draft {
                             Ok(version) => {
                                 self.failed = None;
                                 self.shown = Some(Version {
-                                    images: version.images.map(|img| {
-                                        ctx.load_texture(
-                                            "draft preview",
-                                            img,
-                                            egui::TextureOptions::LINEAR,
-                                        )
-                                    }),
+                                    images: version.images.map(|image| image.into_texture(ctx)),
                                     project: version.project,
                                     key,
                                 });
@@ -354,6 +374,13 @@ impl Draft {
         {
             return;
         }
+        // The original project is fixed for the draft. Reuse its texture while
+        // following steps sampled at the same clip, tick and preview size.
+        let original = self
+            .shown
+            .as_ref()
+            .filter(|shown| shown.key.same_view(&target))
+            .map(|shown| shown.images[0].clone());
         let base = self.base.clone();
         let latest = (target.step == self.steps.len()).then(|| self.latest.clone());
         let replay: Vec<_> = if latest.is_none() {
@@ -386,7 +413,11 @@ impl Draft {
                         )
                     })
                 };
-                let images = [image(&base)?, image(&project)?];
+                let original = match original {
+                    Some(texture) => PreviewImage::Cached(texture),
+                    None => PreviewImage::Rendered(image(&base)?),
+                };
+                let images = [original, PreviewImage::Rendered(image(&project)?)];
                 Ok(Version {
                     key: target.clone(),
                     project,
@@ -498,10 +529,8 @@ mod tests {
     use super::*;
     use tokio::sync::oneshot;
 
-    #[test]
-    fn draft_limits_and_expiry_preserve_the_last_valid_acknowledgement() {
-        let editor = Editor::new(&egui::Context::default());
-        let mut session = Session {
+    fn session(editor: &Editor) -> Session {
+        Session {
             id: editor.document_id,
             handle: "shared".into(),
             name: "Untitled".into(),
@@ -512,7 +541,13 @@ mod tests {
             pending: None,
             draft: None,
             decision: None,
-        };
+        }
+    }
+
+    #[test]
+    fn draft_limits_and_expiry_preserve_the_last_valid_acknowledgement() {
+        let editor = Editor::new(&egui::Context::default());
+        let mut session = session(&editor);
         let status = session
             .begin(
                 &editor,
@@ -563,5 +598,75 @@ mod tests {
         assert_eq!(expired["state"], "expired");
         assert_eq!(expired["latest_step"], 1);
         assert!(session.draft.is_none());
+    }
+
+    #[test]
+    fn draft_preview_reuses_original_texture_only_at_the_same_view() {
+        fn textures(draft: &mut Draft, ctx: &egui::Context, target: Frame) -> [egui::TextureId; 2] {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                draft.preview(ctx, target.clone());
+                if let Some(shown) = draft.shown.as_ref().filter(|shown| shown.key == target) {
+                    return [shown.images[0].id(), shown.images[1].id()];
+                }
+                assert!(
+                    draft.failed.is_none(),
+                    "preview failed: {:?}",
+                    draft.failed.as_ref().map(|(_, err)| err)
+                );
+                assert!(Instant::now() < deadline, "preview did not finish");
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+
+        let ctx = egui::Context::default();
+        let editor = Editor::new(&ctx);
+        let mut session = session(&editor);
+        let status = session
+            .begin(
+                &editor,
+                "shared".into(),
+                editor.history.revision,
+                "reuse".into(),
+            )
+            .unwrap();
+        let id = status["proposal_id"].as_str().unwrap();
+        let clip = editor.baseline.clips[0].id;
+        let mut previous: Option<[egui::TextureId; 2]> = None;
+        for number in 1..=2 {
+            let step = Arc::new(Step {
+                label: format!("Triangle {number}"),
+                operations: json!([{
+                    "op":"create_path", "clip_id":clip, "exposure_start":0, "layer_id":1,
+                    "name":"Triangle", "nodes":[{"point":[2, 2]}, {"point":[12, 2]}, {"point":[12, 12]}],
+                    "closed":true, "fill":[10, 20, 30, 255]
+                }]),
+            });
+            let Append::Validate(before) = session.stage(id, number, &step, 300).unwrap() else {
+                panic!("expected a fresh step");
+            };
+            let mut after = (*before).clone();
+            let results = edit::apply(&mut after, &step.operations).unwrap();
+            session
+                .accept_step(id, number, step, Arc::new(after), results, 300)
+                .unwrap();
+            let draft = session.draft.as_mut().unwrap();
+            let target = draft.frame(number, 240);
+            let current = textures(draft, &ctx, target.clone());
+            if let Some([original, proposed]) = previous {
+                assert_eq!(current[0], original);
+                assert_ne!(current[1], proposed);
+                let resized = textures(
+                    draft,
+                    &ctx,
+                    Frame {
+                        longest: 320,
+                        ..target
+                    },
+                );
+                assert_ne!(resized[0], original);
+            }
+            previous = Some(current);
+        }
     }
 }

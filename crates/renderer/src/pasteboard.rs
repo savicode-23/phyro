@@ -190,7 +190,7 @@ impl Scene {
                     &doc.objects[*slot],
                 )
             });
-        super::sample_objects(objects, self.frame, point, self.scale)
+        super::sample_objects(objects, &doc.layers, self.frame, point, self.scale)
     }
     fn candidate(
         &self,
@@ -351,8 +351,10 @@ impl TilePlan {
             })
     }
     pub fn render(&self, doc: &Document) -> Result<Patch, String> {
-        self.paint
-            .render(self.slots.iter().map(|&(i, run)| (run, &doc.objects[i])))
+        self.paint.render(
+            self.slots.iter().map(|&(i, run)| (run, &doc.objects[i])),
+            &doc.layers,
+        )
     }
     pub fn render_until(
         &self,
@@ -364,6 +366,7 @@ impl TilePlan {
                 .iter()
                 .take_while(|_| !cancel.load(std::sync::atomic::Ordering::Relaxed))
                 .map(|&(i, run)| (run, &doc.objects[i])),
+            &doc.layers,
         )
     }
     /// Cold paints own just these candidates. A worker cannot hold the editor's
@@ -371,6 +374,12 @@ impl TilePlan {
     pub fn detach(self, doc: &Document) -> TileJob {
         TileJob {
             paint: self.paint,
+            layers: doc
+                .layers
+                .iter()
+                .filter(|l| !l.blend_mode.is_normal())
+                .cloned()
+                .collect(),
             objects: self
                 .slots
                 .into_iter()
@@ -382,6 +391,7 @@ impl TilePlan {
 
 pub struct TileJob {
     paint: TilePaint,
+    layers: Vec<document_core::Layer>,
     objects: Vec<(usize, VectorObject)>,
 }
 impl TileJob {
@@ -391,6 +401,7 @@ impl TileJob {
                 .iter()
                 .take_while(|_| !cancel.load(std::sync::atomic::Ordering::Relaxed))
                 .map(|(run, o)| (*run, o)),
+            &self.layers,
         )
     }
 }
@@ -412,6 +423,7 @@ impl TilePaint {
     fn render<'a>(
         &self,
         objects: impl Iterator<Item = (usize, &'a VectorObject)>,
+        layers: &[document_core::Layer],
     ) -> Result<Patch, String> {
         let rect = self.area;
         let mut patch = Patch {
@@ -435,12 +447,11 @@ impl TilePaint {
         // keeps masks, gradients and antialiasing identical to a freshly painted tile.
         let mut image =
             Pixmap::new(SURFACE, SURFACE).ok_or("Could not allocate a pasteboard tile.")?;
-        clip_groups::paint(
+        clip_groups::paint_with_layers(
             &mut image,
             objects,
-            self.frame,
-            transform,
-            [transform.tx, transform.ty],
+            layers,
+            (self.frame, transform, [transform.tx, transform.ty]),
             None,
             crate::RenderPurpose::Editor,
         )?;

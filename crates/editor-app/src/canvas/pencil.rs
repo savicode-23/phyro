@@ -2,6 +2,7 @@ use super::{is_editable, paths, Action, Canvas, CanvasStyle, View};
 use document_core::{path_edit::HandleStyle, Document, PathNode};
 use eframe::egui::{self, Color32, Event, Painter, Pos2, Response, Ui, Vec2};
 use std::cell::OnceCell;
+use std::sync::Arc;
 mod fit;
 mod pressure;
 
@@ -375,7 +376,7 @@ impl Canvas {
         &mut self,
         ui: &Ui,
         response: &Response,
-        doc: &mut Document,
+        doc: &mut Arc<Document>,
         selection: &mut Vec<u64>,
         style: &CanvasStyle,
         view: View,
@@ -437,7 +438,7 @@ impl Canvas {
                                 self.extra_pencil_strokes.push(path);
                                 ui.ctx().request_repaint();
                             } else {
-                                committed = path.apply(doc, selection);
+                                committed = path.apply(Arc::make_mut(doc), selection);
                             }
                         }
                     }
@@ -586,6 +587,33 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn uneven_subpixel_jitter_does_not_split_a_straight_default_pencil_stroke() {
+        use std::f32::consts::TAU;
+
+        for scale in [0.25, 1., 16.] {
+            let fit = |amount| {
+                let mut stroke = Stroke::new(Pos2::ZERO, scale, amount);
+                for i in 1..=480 {
+                    let x = i as f32;
+                    let y = if i < 240 {
+                        0.93 * (x * 1.6).sin() * (TAU * x / 480.).sin().abs()
+                    } else {
+                        0.
+                    };
+                    stroke.push(pos2(x / scale, y / scale));
+                }
+                let (nodes, closed, _) = stroke.finish().unwrap();
+                assert!(!closed);
+                assert_eq!(nodes[0].point, [0.; 2]);
+                assert_eq!(nodes.last().unwrap().point, [480. / scale, 0.]);
+                nodes
+            };
+            assert_eq!(fit(crate::tool_keys::DEFAULT_PENCIL_SMOOTHING).len(), 2);
+            assert!(fit(0).len() > 2);
         }
     }
 

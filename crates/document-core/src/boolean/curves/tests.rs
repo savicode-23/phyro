@@ -147,6 +147,80 @@ fn tangent_and_near_contact_keep_the_integer_overlay_result() {
 }
 
 #[test]
+fn large_difference_keeps_source_curves_and_the_hole() {
+    let mut doc = Document {
+        width: 4096,
+        height: 4096,
+        ..Document::default()
+    };
+    let ellipse = crate::path_edit::primitive_path(&Shape::Ellipse).unwrap();
+    let size = 2048.;
+    let back = doc.add_shape([0.; 2], [size; 2], [255; 4], ellipse.clone(), 1);
+    let cutters = [([0.74, 0.06], 0.61), ([0.33; 2], 0.29)].map(|(origin, scale)| {
+        doc.add_shape(
+            origin.map(|axis| axis * size),
+            [scale * size; 2],
+            [255; 4],
+            ellipse.clone(),
+            1,
+        )
+    });
+    assert_eq!(
+        doc.boolean(&[back, cutters[0], cutters[1]], 0, BooleanOp::Difference)
+            .unwrap(),
+        [back]
+    );
+    let [outer, hole] = doc.objects[0].shape.contours() else {
+        panic!("expected an outer contour and a hole");
+    };
+    assert!(outer.len() <= 20, "{} outer anchors", outer.len());
+    assert!(outer.iter().any(|n| n.outgoing != n.point));
+    assert_eq!(hole.len(), 4);
+    assert_eq!(doc.hit_test([240., 1024.], 0), Some(back));
+    for point in [[965., 965.], [1950., 700.], [2100., 1200.]] {
+        assert_eq!(doc.hit_test(point, 0), None, "{point:?}");
+    }
+    doc.validate().unwrap();
+}
+
+#[test]
+fn a_dense_sibling_contour_does_not_disable_source_curve_recovery() {
+    let ellipse = crate::path_edit::primitive_path(&Shape::Ellipse).unwrap();
+    let hole = (0..300)
+        .map(|i| {
+            let (sin, cos) = (-std::f32::consts::TAU * i as f32 / 300.).sin_cos();
+            PathNode::corner([0.5 + 0.25 * cos, 0.5 + 0.25 * sin])
+        })
+        .collect();
+    let mut doc = Document::default();
+    let back = doc.add_shape(
+        [0.; 2],
+        [512.; 2],
+        [255; 4],
+        Shape::Compound {
+            contours: vec![ellipse.contours()[0].clone(), hole],
+        },
+        1,
+    );
+    let cutter = doc.add_rectangle([410., 10.], [220., 200.], [255; 4]);
+    assert_eq!(
+        doc.boolean(&[back, cutter], 0, BooleanOp::Difference)
+            .unwrap(),
+        [back]
+    );
+    let [outer, hole] = doc.objects[0].shape.contours() else {
+        panic!("expected an outer contour and a hole");
+    };
+    assert!(outer.len() <= 20, "{} outer anchors", outer.len());
+    assert!(outer.iter().any(|n| n.outgoing != n.point));
+    assert!(hole.len() > 128);
+    assert_eq!(doc.hit_test([100., 256.], 0), Some(back));
+    assert_eq!(doc.hit_test([256., 256.], 0), None);
+    assert_eq!(doc.hit_test([440., 150.], 0), None);
+    doc.validate().unwrap();
+}
+
+#[test]
 fn union_preserves_each_unchanged_curve_among_three_operands() {
     let ellipse = crate::path_edit::primitive_path(&Shape::Ellipse).unwrap();
     for second_x in [75., 35.] {

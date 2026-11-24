@@ -4,13 +4,14 @@ pub(super) use crate::bezier::{distance_sq, quadratic, split_cubic};
 use tiny_skia_path::{Path, PathSegment};
 
 pub(super) const TOLERANCE: f64 = 0.02;
+pub(super) const MAX_INPUT_POINTS: usize = 4096;
 type Coord = [f64; 2];
 fn world(point: tiny_skia_path::Point) -> Coord {
     [point.x.into(), point.y.into()]
 }
 
 fn push(points: &mut Vec<Point>, p: Coord) -> Result<(), String> {
-    if points.len() >= 4096 {
+    if points.len() >= MAX_INPUT_POINTS {
         return Err(COMPLEXITY.into());
     }
     let scaled = p.map(|c| (c * GRID).round());

@@ -16,7 +16,7 @@
 
 | Area | Working functionality |
 | --- | --- |
-| Drawing | Bézier and pressure Pencil tools, editable text, path and node editing, Booleans, gradients, clipping, layers, groups, symbols and embedded raster references. |
+| Drawing | Bézier and pressure Pencil tools, editable text, path and node editing, Booleans, gradients, blend modes, clipping, layers, groups, symbols and embedded raster references. |
 | Animation | Animation sets, nested clips, independently timed drawing layers, property keys and easing, onion skins, guided shape morphs, two-bone IK, foot pins and weighted path deformation. The timeline supports frame box selection, disjoint ranges and bulk deletion with undo. |
 | Workspace | Document tabs, rectangular and axonometric grids, folder asset library, configurable shortcuts and panel layout, recoverable drafts, recent issue history and copyable crash reports. |
 | Assistant sharing | Opt-in MCP pairing for one tab, scoped inspection, frame previews and artist-reviewed batches. Live drawing previews can follow, pin and keep a completed step with one undo. |

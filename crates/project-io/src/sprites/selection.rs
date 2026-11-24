@@ -147,7 +147,8 @@ fn encode_asset(
         .collect();
     let (bytes, origin, size) = match format {
         AssetFormat::Png(scale) => {
-            let (image, origin) = renderer::render_artwork(&art, frame, scale).map_err(invalid)?;
+            let (image, origin) =
+                renderer::render_artwork(&art, &doc.layers, frame, scale).map_err(invalid)?;
             let size = [image.width(), image.height()];
             (image.encode_png().map_err(io::Error::other)?, origin, size)
         }

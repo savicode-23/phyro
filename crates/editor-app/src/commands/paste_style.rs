@@ -1,12 +1,14 @@
-use super::{editable_selection, Clipboard};
+use super::{Clipboard, SelectionScope};
 use crate::timeline::KeyMode;
-use document_core::{Document, Gradient, KeyValue, Property, VectorObject};
+use document_core::{BlendMode, Document, Gradient, KeyValue, Property, VectorObject};
 use std::collections::HashSet;
 
 struct PaintStyle {
     fill: [u8; 4],
     no_fill: bool,
     gradient: Option<Gradient>,
+    fill_blend_mode: BlendMode,
+    stroke_blend_mode: BlendMode,
     stroke_gradient: Option<Gradient>,
     stroke: [u8; 4],
     no_stroke: bool,
@@ -19,6 +21,8 @@ impl PaintStyle {
             fill: object.fill_at(frame),
             no_fill: object.no_fill,
             gradient: object.gradient.clone(),
+            fill_blend_mode: object.fill_blend_mode,
+            stroke_blend_mode: object.stroke_blend_mode,
             stroke_gradient: object.stroke_gradient.clone(),
             stroke: object.stroke_at(frame),
             no_stroke: object.no_stroke,
@@ -29,11 +33,14 @@ impl PaintStyle {
     fn apply(&self, object: &mut VectorObject, frame: u32, mode: KeyMode) -> bool {
         let fill = self.fill != object.fill_at(frame)
             && mode.set(object, frame, Property::Fill, KeyValue::Color(self.fill));
-        let fill_paint = (self.gradient != object.gradient || self.no_fill != object.no_fill)
+        let fill_paint = (self.gradient != object.gradient
+            || self.no_fill != object.no_fill
+            || self.fill_blend_mode != object.fill_blend_mode)
             && mode.allows(object, frame, Property::Fill);
         if fill_paint {
             object.no_fill = self.no_fill;
             object.gradient.clone_from(&self.gradient);
+            object.fill_blend_mode = self.fill_blend_mode;
         }
         let stroke = self.stroke != object.stroke_at(frame)
             && mode.set(
@@ -43,11 +50,13 @@ impl PaintStyle {
                 KeyValue::Color(self.stroke),
             );
         let stroke_paint = (self.stroke_gradient != object.stroke_gradient
-            || self.no_stroke != object.no_stroke)
+            || self.no_stroke != object.no_stroke
+            || self.stroke_blend_mode != object.stroke_blend_mode)
             && mode.allows(object, frame, Property::Stroke);
         if stroke_paint {
             object.no_stroke = self.no_stroke;
             object.stroke_gradient.clone_from(&self.stroke_gradient);
+            object.stroke_blend_mode = self.stroke_blend_mode;
         }
         let width = self.stroke_width != object.stroke_width_at(frame)
             && mode.set(
@@ -60,11 +69,16 @@ impl PaintStyle {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn has_style_target(doc: &Document, ids: &[u64]) -> bool {
+    has_style_target_in(doc, ids, SelectionScope::Groups)
+}
+
+pub(crate) fn has_style_target_in(doc: &Document, ids: &[u64], scope: SelectionScope) -> bool {
     if ids.is_empty() {
         return false;
     }
-    let selected: HashSet<_> = editable_selection(doc, ids).into_iter().collect();
+    let selected: HashSet<_> = scope.resolve(doc, ids).into_iter().collect();
     doc.objects
         .iter()
         .any(|o| super::has_vector_paint(o) && selected.contains(&o.id))
@@ -83,6 +97,7 @@ impl Clipboard {
         self.style_source().is_some()
     }
 
+    #[cfg(test)]
     pub(crate) fn paste_style(
         &self,
         doc: &mut Document,
@@ -90,11 +105,22 @@ impl Clipboard {
         frame: u32,
         mode: KeyMode,
     ) -> usize {
+        self.paste_style_in(doc, ids, frame, mode, SelectionScope::Groups)
+    }
+
+    pub(crate) fn paste_style_in(
+        &self,
+        doc: &mut Document,
+        ids: &[u64],
+        frame: u32,
+        mode: KeyMode,
+        scope: SelectionScope,
+    ) -> usize {
         let Some(source) = self.style_source() else {
             return 0;
         };
         let style = PaintStyle::at(source, self.source_frame);
-        let selected: HashSet<_> = editable_selection(doc, ids).into_iter().collect();
+        let selected: HashSet<_> = scope.resolve(doc, ids).into_iter().collect();
         let mut changed = 0;
         for object in &mut doc.objects {
             if selected.contains(&object.id)
@@ -155,6 +181,8 @@ mod tests {
         let bottom = path(&mut source, 40., 1);
         let o = &mut source.objects[0];
         o.no_fill = true;
+        o.fill_blend_mode = BlendMode::Multiply;
+        o.stroke_blend_mode = BlendMode::Screen;
         o.gradient = Some(gradient());
         o.stroke_gradient = Some(Gradient::from_color(
             GradientKind::Rectangular {
@@ -199,6 +227,8 @@ mod tests {
             o.stroke_gradient = paint.stroke_gradient.clone();
             o.stroke = paint.stroke;
             o.stroke_width = paint.stroke_width;
+            o.fill_blend_mode = paint.fill_blend_mode;
+            o.stroke_blend_mode = paint.stroke_blend_mode;
         }
         assert!(has_style_target(&dst, &[a]));
         assert!(!has_style_target(&dst, &[ignored]));

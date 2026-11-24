@@ -115,11 +115,12 @@ pub(super) fn begin(
             }
         }
     }
-    let Some(id) = doc.hit_test(point.into(), frame) else {
+    let scope = style.group_scope();
+    let Some(id) = doc.hit_test_in(point.into(), frame, scope) else {
         selection.clear();
         return None;
     };
-    *selection = editable_selection(doc, &[id]);
+    *selection = scope.resolve(doc, &[id]);
     let [id] = selection.as_slice() else {
         return None;
     };

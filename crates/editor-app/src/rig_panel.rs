@@ -5,6 +5,7 @@ mod skin;
 use crate::timeline::KeyMode;
 use document_core::{Clip, Document, Interpolation};
 use eframe::egui::{self, Color32, Pos2, Ui};
+use std::sync::Arc;
 
 #[derive(Clone, Copy)]
 enum Pick {
@@ -143,7 +144,7 @@ impl RigPanel {
         ui: &Ui,
         response: &egui::Response,
         point: Option<[f32; 2]>,
-        doc: &mut Document,
+        doc: &mut Arc<Document>,
         frame: u32,
     ) {
         if response.secondary_clicked()
@@ -157,7 +158,7 @@ impl RigPanel {
         }
         if let Some(id) = self.ik_target {
             if let Some(point) = point {
-                self.apply_ik(doc, id, frame, point);
+                self.apply_ik(Arc::make_mut(doc), id, frame, point);
             }
             return;
         }
@@ -184,21 +185,21 @@ impl RigPanel {
             }
             Pick::Tip => {
                 draft.tail = point;
-                self.create(doc);
+                self.create(Arc::make_mut(doc));
             }
         }
     }
 
-    fn bind(&mut self, doc: &mut Document, selection: &[u64], bone: Option<u64>, frame: u32) {
+    fn bind(&mut self, doc: &mut Arc<Document>, selection: &[u64], bone: Option<u64>, frame: u32) {
         // A selection can span layers. Commit all links together only after every object is editable.
-        let mut staged = doc.clone();
+        let mut staged = (**doc).clone();
         for &id in selection {
             if let Err(e) = staged.bind_rigid_at(id, bone, frame) {
                 self.error = Some(e);
                 return;
             }
         }
-        *doc = staged;
+        *doc = Arc::new(staged);
         self.error = None;
     }
 
@@ -210,7 +211,7 @@ impl RigPanel {
         frame: u32,
         mode: KeyMode,
     ) {
-        let doc = clip.drawing_at_mut(frame);
+        let doc = clip.drawing_snapshot_mut(frame);
         let mut foot_contact = None;
         self.weight_path = None;
         if self
@@ -283,7 +284,7 @@ impl RigPanel {
         }
     }
 
-    fn show_draft(&mut self, ui: &mut Ui, doc: &mut Document) {
+    fn show_draft(&mut self, ui: &mut Ui, doc: &mut Arc<Document>) {
         let draft = self.draft.as_mut().unwrap();
         ui.horizontal(|ui| {
             ui.label("Name");
@@ -320,7 +321,7 @@ impl RigPanel {
                 .on_hover_text("Use these rest coordinates")
                 .clicked()
             {
-                self.create(doc);
+                self.create(Arc::make_mut(doc));
             }
             if ui.button("Cancel").clicked() {
                 self.cancel_placement();
@@ -331,7 +332,7 @@ impl RigPanel {
     fn show_pose(
         &mut self,
         ui: &mut Ui,
-        doc: &mut Document,
+        doc: &mut Arc<Document>,
         selection: &[u64],
         frame: u32,
         mode: KeyMode,
@@ -403,7 +404,7 @@ impl RigPanel {
     fn rotation_controls(
         &mut self,
         ui: &mut Ui,
-        doc: &mut Document,
+        doc: &mut Arc<Document>,
         index: usize,
         frame: u32,
         mode: KeyMode,
@@ -435,9 +436,14 @@ impl RigPanel {
                 .on_hover_text("Set the displayed pose angle to zero")
                 .clicked();
             if angle_changed || reset {
-                self.error =
-                    Self::set_pose_angle(doc, id, frame, mode, if reset { 0. } else { angle })
-                        .err();
+                self.error = Self::set_pose_angle(
+                    Arc::make_mut(doc),
+                    id,
+                    frame,
+                    mode,
+                    if reset { 0. } else { angle },
+                )
+                .err();
             }
         });
         ui.horizontal_wrapped(|ui| {
@@ -448,14 +454,16 @@ impl RigPanel {
                     .on_hover_text("Remove this bone's rotation key at the playhead")
                     .clicked()
                 {
-                    self.error = doc.remove_bone_rotation_key(id, frame).err();
+                    self.error = Arc::make_mut(doc).remove_bone_rotation_key(id, frame).err();
                 }
             } else if ui
                 .button("Key pose")
                 .on_hover_text("Store this bone's current angle at the playhead")
                 .clicked()
             {
-                self.error = doc.set_bone_rotation_key(id, frame, angle).err();
+                self.error = Arc::make_mut(doc)
+                    .set_bone_rotation_key(id, frame, angle)
+                    .err();
             }
             if tracked {
                 let mut chosen = interpolation;
@@ -472,7 +480,7 @@ impl RigPanel {
                     .response
                     .on_hover_text("How this bone rotates between keys");
                 if chosen != interpolation {
-                    self.error = doc.set_bone_interpolation(id, chosen).err();
+                    self.error = Arc::make_mut(doc).set_bone_interpolation(id, chosen).err();
                 }
             }
         });

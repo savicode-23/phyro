@@ -229,7 +229,15 @@ mod tests {
             let mut surround = Pixmap::new(w + 16, h + 16).unwrap();
             let transform =
                 Transform::from_scale(w as f32 / 80., h as f32 / 64.).post_translate(8., 8.);
-            crate::draw_object(&mut surround, object, 0, transform, [8.; 2], 1.);
+            crate::draw_object(
+                &mut surround,
+                object,
+                0,
+                transform,
+                [8.; 2],
+                1.,
+                Default::default(),
+            );
             assert!(surround.pixels().iter().any(|p| p.alpha() > 0));
             for (i, pixel) in surround.pixels().iter().enumerate() {
                 let x = i as u32 % surround.width();
@@ -319,7 +327,7 @@ mod tests {
             let obj = &doc.objects[0];
             let bounds = pixel_bounds(obj, 0, t).unwrap();
             let mut uncropped = Pixmap::new(110, 110).unwrap();
-            crate::draw_object(&mut uncropped, obj, 0, t, [0.; 2], 1.);
+            crate::draw_object(&mut uncropped, obj, 0, t, [0.; 2], 1., Default::default());
             let mut count = 0;
             for (i, p) in uncropped.pixels().iter().enumerate() {
                 if p.alpha() != 0 {
@@ -349,7 +357,15 @@ mod tests {
             actual.height() as f32 / doc.height as f32,
         );
         let mut expected = Pixmap::new(actual.width(), actual.height()).unwrap();
-        crate::draw_object(&mut expected, &doc.objects[0], 2, transform, [0.; 2], 1.);
+        crate::draw_object(
+            &mut expected,
+            &doc.objects[0],
+            2,
+            transform,
+            [0.; 2],
+            1.,
+            Default::default(),
+        );
         assert!(expected.pixels().iter().any(|p| p.alpha() > 0));
         assert!(actual.data() == expected.data());
     }

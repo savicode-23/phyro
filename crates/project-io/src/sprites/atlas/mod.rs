@@ -97,6 +97,7 @@ impl Atlas {
         let mut unique: Vec<Sample> = Vec::new();
         let mut ticks: Vec<Tick> = Vec::with_capacity(total as usize);
         let mut signatures: BTreeMap<(u32, u32, u64), Vec<usize>> = BTreeMap::new();
+        let mut reference: Option<(usize, Pixmap)> = None;
         for (clip_index, clip) in clips.iter().enumerate() {
             let offset = ticks.len() as u32;
             let mut clock = ExposureClock::default();
@@ -132,12 +133,21 @@ impl Atlas {
                         // Compare actual pixels before sharing an atlas region, including across clips
                         // that happen to produce a hash collision.
                         let other = &unique[index];
-                        let reference = render_tick(
-                            clips[other.clip_index],
-                            other.frame,
-                            preset.raster_scale(),
-                        )?;
-                        if scanlines(&image, region).eq(scanlines(&reference, other.region)) {
+                        if reference
+                            .as_ref()
+                            .is_none_or(|(cached, _)| *cached != index)
+                        {
+                            // Keep at most the current sample and one comparison frame.
+                            drop(reference.take());
+                            let pixels = render_tick(
+                                clips[other.clip_index],
+                                other.frame,
+                                preset.raster_scale(),
+                            )?;
+                            reference = Some((index, pixels));
+                        }
+                        let (_, pixels) = reference.as_ref().expect("comparison frame is cached");
+                        if scanlines(&image, region).eq(scanlines(pixels, other.region)) {
                             matched = Some(index);
                             break;
                         }
@@ -156,6 +166,9 @@ impl Atlas {
                         frame,
                         region,
                     });
+                    if preset.packed.deduplicate {
+                        reference = Some((index, image));
+                    }
                     index
                 };
                 ticks.push(Tick {
@@ -164,6 +177,7 @@ impl Atlas {
                 });
             }
         }
+        drop(reference);
         let regions = unique.iter().map(|s| s.region).collect::<Vec<_>>();
         let packing = Packing::plan(&regions, preset, pages)?;
         Ok(Self {

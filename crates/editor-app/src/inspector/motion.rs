@@ -1,5 +1,6 @@
 use super::*;
 use document_core::MotionPath;
+use std::sync::Arc;
 
 fn attach(doc: &mut Document, target: u64, guide: u64, frame: u32) -> Result<(), String> {
     let source = doc
@@ -38,7 +39,7 @@ fn attach(doc: &mut Document, target: u64, guide: u64, frame: u32) -> Result<(),
 
 pub(super) fn show(
     ui: &mut Ui,
-    doc: &mut Document,
+    doc: &mut Arc<Document>,
     selected: &mut Vec<u64>,
     frame: u32,
     style: &mut CanvasStyle,
@@ -49,7 +50,7 @@ pub(super) fn show(
             let ids:Vec<_>=doc.paint_order().into_iter().filter(|o|selected.contains(&o.id)&&commands::is_editable(doc,o.layer)).map(|o|o.id).collect();
             if let [target,guide]=ids.as_slice(){
                 if ui.button("Attach to upper path").on_hover_text("Turn the upper path into a motion guide. Its first node becomes the object's center at the start of travel.").clicked() {
-                    match attach(doc,*target,*guide,frame) {
+                    match attach(Arc::make_mut(doc),*target,*guide,frame) {
                         Ok(())=>{*selected=vec![*target];style.edit_motion=true;ui.data_mut(|d|d.remove::<String>(notice));}
                         Err(e)=>ui.data_mut(|d|d.insert_temp(notice,e)),
                     }
@@ -58,22 +59,33 @@ pub(super) fn show(
             }
             return;
         }
-        let Some(o)=selected.first().filter(|_|selected.len()==1).and_then(|id|doc.objects.iter_mut().find(|o|o.id==*id)) else {
+        let Some(index)=selected.first().filter(|_|selected.len()==1).and_then(|id|doc.objects.iter().position(|o|o.id==*id)) else {
             ui.small("Draw a guide with the Pen. Select the object and its guide together.");return;
         };
+        let o = &doc.objects[index];
         if o.motion.is_none(){ui.small("Draw a path above this object, then select both to attach it.");return;}
         let mut progress=o.progress_at(frame)*100.;
         ui.horizontal(|ui|{ui.label("Progress");
           if ui.add(egui::DragValue::new(&mut progress).range(0.0..=100.).suffix("%")).changed(){
+              let o = &mut Arc::make_mut(doc).objects[index];
               style.key_mode.set(o,frame,Property::MotionProgress,KeyValue::Scalar(progress/100.));
           }
-          if ui.small_button("+ Key").on_hover_text("Key motion progress at the current frame").clicked(){Property::MotionProgress.add(o,frame);}
+          if ui.small_button("+ Key").on_hover_text("Key motion progress at the current frame").clicked(){
+              let o = &mut Arc::make_mut(doc).objects[index];
+              Property::MotionProgress.add(o,frame);
+          }
         });
-        let path=o.motion.as_mut().unwrap();
-        ui.checkbox(&mut path.align_tangent,"Face direction of travel");
-        ui.checkbox(&mut path.reverse,"Reverse direction");
+        let path = doc.objects[index].motion.as_ref().unwrap();
+        let (mut align_tangent, mut reverse) = (path.align_tangent, path.reverse);
+        ui.checkbox(&mut align_tangent,"Face direction of travel");
+        ui.checkbox(&mut reverse,"Reverse direction");
+        if (align_tangent, reverse) != (path.align_tangent, path.reverse) {
+            let path = Arc::make_mut(doc).objects[index].motion.as_mut().unwrap();
+            (path.align_tangent, path.reverse) = (align_tangent, reverse);
+        }
         ui.checkbox(&mut style.edit_motion,"Edit guide on canvas").on_hover_text("Drag square anchors and round control handles with Select or Nodes.");
         if ui.button("Detach at current pose").clicked() {
+            let o = &mut Arc::make_mut(doc).objects[index];
             let offset=o.motion_offset_at(frame);
             let heading=o.motion_heading_at(frame);
             o.motion=None;

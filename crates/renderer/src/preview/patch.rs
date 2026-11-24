@@ -134,12 +134,11 @@ pub fn edit_patch(
     let objects = crate::clip_groups::runs(ordered.into_iter(), frame)
         .filter(|(_, o)| bounds(o).is_some_and(|r| r.intersect(&area).is_some()));
     let mut symbols = crate::bounds::SymbolBounds::new();
-    crate::clip_groups::paint(
+    crate::clip_groups::paint_with_layers(
         &mut surface,
         objects,
-        frame,
-        page.transform,
-        [0.; 2],
+        &after.layers,
+        (frame, page.transform, [0.; 2]),
         Some(&mut symbols),
         crate::RenderPurpose::Editor,
     )?;
@@ -285,6 +284,7 @@ mod tests {
             name: "Hidden".into(),
             visible: false,
             locked: false,
+            blend_mode: Default::default(),
         });
         let mut cut = original.clone();
         cut.boolean(&[base, cutter], 0, BooleanOp::Difference)

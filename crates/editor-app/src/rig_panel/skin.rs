@@ -2,12 +2,13 @@ use super::RigPanel;
 use crate::{commands::is_editable, path_editor};
 use document_core::Document;
 use eframe::egui::{self, Color32, DragValue, Painter, Pos2, Ui};
+use std::sync::Arc;
 
 impl RigPanel {
     pub(super) fn skin_controls(
         &mut self,
         ui: &mut Ui,
-        doc: &mut Document,
+        doc: &mut Arc<Document>,
         selection: &[u64],
         child: u64,
         frame: u32,
@@ -34,7 +35,7 @@ impl RigPanel {
                 )
                 .clicked()
             {
-                self.error = doc.bind_skin_at(id, child, frame).err();
+                self.error = Arc::make_mut(doc).bind_skin_at(id, child, frame).err();
             }
             return;
         };
@@ -93,7 +94,9 @@ impl RigPanel {
             path_editor::select(ui.ctx(), id, frame, contour - 1, node - 1);
         }
         if let Some(weight) = change {
-            self.error = doc.set_skin_weight(id, contour - 1, node - 1, weight).err();
+            self.error = Arc::make_mut(doc)
+                .set_skin_weight(id, contour - 1, node - 1, weight)
+                .err();
         }
         self.weight_path = Some(id);
     }

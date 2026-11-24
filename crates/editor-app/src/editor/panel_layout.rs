@@ -448,7 +448,7 @@ impl Editor {
                             {
                                 self.inspector_body(ui, tab, false);
                             } else {
-                                tab.scroll().show(ui, |ui| {
+                                tab.scroll(ui).show(ui, |ui| {
                                     self.inspector_body(ui, tab, reveal && tab == Tab::Properties)
                                 });
                             }

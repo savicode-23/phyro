@@ -53,6 +53,29 @@ fn custom_shortcuts_replace_aliases_and_reset_checks_every_alias() {
 }
 
 #[test]
+fn simplify_default_respects_an_existing_ctrl_l_binding() {
+    let mut map: Keymap = serde_json::from_value(serde_json::json!({
+        "align": "Primary+L"
+    }))
+    .unwrap();
+    assert_eq!(map.resolve(Key::L, M::COMMAND), Some(Action::Align));
+    assert!(map.bindings(Action::SimplifyPath).is_empty());
+    map.reset(Action::Align).unwrap();
+    map.reset(Action::SimplifyPath).unwrap();
+    assert_eq!(map.resolve(Key::L, M::COMMAND), Some(Action::SimplifyPath));
+}
+
+#[test]
+fn grayscale_default_respects_an_existing_shift_g_binding() {
+    let map: Keymap = serde_json::from_value(serde_json::json!({
+        "gradient_tool": "Shift+G"
+    }))
+    .unwrap();
+    assert_eq!(map.resolve(Key::G, M::SHIFT), Some(Action::GradientTool));
+    assert!(map.bindings(Action::Grayscale).is_empty());
+}
+
+#[test]
 fn logical_punctuation_and_platform_primary_share_bindings() {
     let mut map = Keymap::default();
     for primary in [M::COMMAND, M::COMMAND | M::CTRL, M::COMMAND | M::MAC_CMD] {

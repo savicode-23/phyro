@@ -3,7 +3,9 @@ mod eyedropper;
 mod flip;
 mod folder_drag;
 pub(crate) use eyedropper::{paint_picker_icon, PaintChannel};
+#[cfg(test)]
 pub(crate) use flip::flip_selection;
+pub(crate) use flip::flip_selection_in;
 pub(crate) mod display_filter;
 mod gesture;
 mod gradient;
@@ -27,12 +29,16 @@ pub(crate) use tool_paint::{DrawingPaint, PathPaintMemory};
 #[cfg(test)]
 mod tests;
 
-use crate::commands::{editable_selection, is_editable};
+#[cfg(test)]
+use crate::commands::editable_selection;
+use crate::commands::is_editable;
 use crate::diagnostics::{Action, Diagnostics};
+use document_core::arrange::{Group, SelectionScope};
 use document_core::{Document, PathNode, Shape};
 use eframe::egui::{self, Color32, Pos2, Rect, TextureHandle, TextureOptions, Vec2};
 use gesture::{box_corners, group_bounds, Gesture, GestureIds};
 pub use snapping::SnapSettings;
+use std::sync::{Arc, Weak};
 
 const ARTBOARD_COLOR: Color32 = Color32::from_rgb(179, 181, 183);
 
@@ -75,6 +81,7 @@ impl From<Tool> for crate::diagnostics::Tool {
 
 #[derive(Clone)]
 pub struct CanvasStyle {
+    pub(crate) group_edit: Option<GroupEdit>,
     pub(crate) edit_motion: bool,
     pub(crate) key_mode: crate::timeline::KeyMode,
     pub fill: [u8; 4],
@@ -91,7 +98,20 @@ pub struct CanvasStyle {
     pub snap: SnapSettings,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct GroupEdit {
+    pub group: Group,
+    pub clip_session: u64,
+    pub exposure_start: u32,
+}
+
 impl CanvasStyle {
+    pub(crate) fn group_scope(&self) -> SelectionScope {
+        self.group_edit.map_or(SelectionScope::Groups, |edit| {
+            SelectionScope::InGroup(edit.group)
+        })
+    }
+
     pub(crate) fn read_paint(&mut self, object: &document_core::VectorObject, frame: u32) {
         if object.image.is_some() {
             return;
@@ -112,7 +132,15 @@ impl CanvasStyle {
         self.layer = object.layer;
     }
 
-    fn paint_new_object(&self, object: &mut document_core::VectorObject) {
+    fn paint_new_object(&self, doc: &mut Document) {
+        let group = self.group_scope().group().and_then(|group| {
+            let name = group.member(doc)?.group_name.clone();
+            Some((group, name))
+        });
+        let object = doc.objects.last_mut().expect("creation appends an object");
+        if let Some((group, name)) = group {
+            group.add(object, name);
+        }
         object.fill = self.fill;
         object.no_fill = self.no_fill;
         object.gradient = self.gradient.as_deref().cloned();
@@ -153,6 +181,8 @@ struct FrameTexture {
 
 #[derive(Default)]
 pub struct Canvas {
+    pub(crate) direct_selection: Option<u64>,
+    direct_click: bool,
     context_surface: Option<(egui::Response, View)>,
     sampled: Option<eyedropper::PaintSample>,
     pub(crate) property_pick: Option<PaintChannel>,
@@ -191,12 +221,24 @@ pub struct Canvas {
     duplicated_placement: Option<(std::sync::Arc<Document>, u32, u64)>,
     page_drag: Option<raster::PageDrag>,
     previous_drag_document: Option<std::sync::Arc<Document>>,
+    staged_transform: Option<StagedTransform>,
     patching_drag: bool,
     show_checkerboard: bool,
     checker: Option<TextureHandle>,
 }
 
 impl Canvas {
+    pub(crate) fn selection_scope(&self, style: &CanvasStyle, selection: &[u64]) -> SelectionScope {
+        let scope = style.group_scope();
+        if scope == SelectionScope::Groups
+            && self.direct_selection.is_some_and(|id| selection == [id])
+        {
+            SelectionScope::Objects
+        } else {
+            scope
+        }
+    }
+
     /// Retain the document's view and tools while releasing textures and jobs
     /// that only its visible canvas can use.
     pub(crate) fn park(&mut self) {
@@ -213,6 +255,7 @@ impl Canvas {
         self.duplicated_placement = None;
         self.page_drag = None;
         self.previous_drag_document = None;
+        self.staged_transform = None;
         self.patching_drag = false;
         self.drag_targets = None;
         self.pen_targets = None;
@@ -321,7 +364,9 @@ impl Canvas {
         self.rig.cancel_handle_drag();
         self.property_pick = None;
         self.previous_drag_document = None;
+        self.staged_transform = None;
         self.gesture = None;
+        self.direct_click = false;
         self.last_node_click = None;
         self.drag_targets = None;
         self.pen.clear();
@@ -386,7 +431,6 @@ impl Canvas {
                         || drawing.as_ref() == authored.as_ref())
             });
         self.asset_move.poll_warm(ui.ctx(), editable);
-        let doc = std::sync::Arc::make_mut(authored);
         self.context_surface = None;
         // Compare the actual outgoing and incoming snapshots in this paint only.
         // Dropping either a failed or abandoned cache cannot retain a drag document.
@@ -416,7 +460,7 @@ impl Canvas {
             .continuation
             .or(self.pen_redo_join)
             .is_some_and(|path| {
-                path.target_index(doc, selection, frame, style.key_mode)
+                path.target_index(authored, selection, frame, style.key_mode)
                     .is_none()
             })
         {
@@ -425,7 +469,7 @@ impl Canvas {
         self.previous = Some(state);
         let (viewport, response) =
             ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
-        let size = egui::vec2(doc.width as f32, doc.height as f32);
+        let size = egui::vec2(authored.width as f32, authored.height as f32);
         // Resizing a dock or the native window can change Fit on every pointer
         // event. Scale the existing artwork during that gesture, as for wheel zoom.
         let mut view_changed = self
@@ -511,7 +555,7 @@ impl Canvas {
                 }
                 self.cancel_drag();
                 self.rig
-                    .placement_input(ui, &response, board_point, doc, frame);
+                    .placement_input(ui, &response, board_point, authored, frame);
             } else if self.gesture.is_none()
                 && self.property_pick.is_none()
                 && self.point_text.is_none()
@@ -519,7 +563,7 @@ impl Canvas {
                 && self.rig.handle_input(
                     ui,
                     &response,
-                    doc,
+                    authored,
                     frame,
                     |p| view.screen(p.into()),
                     |p| view.world(p),
@@ -537,7 +581,7 @@ impl Canvas {
                     if let Some(pos) = response.interact_pointer_pos() {
                         let world = view.world(pos);
                         let sample = self.sample_paint(
-                            doc,
+                            authored,
                             frame,
                             world.into(),
                             view.scale * ui.ctx().pixels_per_point(),
@@ -546,14 +590,21 @@ impl Canvas {
                                 |p| p == PaintChannel::Stroke,
                             ),
                         )?;
-                        let painted = sample.apply_to_selection(doc, selection, frame, style);
+                        let painted = !selection.is_empty()
+                            && sample.apply_to_selection(
+                                Arc::make_mut(authored),
+                                selection,
+                                frame,
+                                style,
+                            );
                         change.committed = self.property_pick.take().is_none() && painted;
                         self.sampled = Some(sample);
                         self.note(Action::SamplePaint);
                     }
                 }
             } else if tool == Tool::Pencil {
-                change.committed = self.pencil_input(ui, &response, doc, selection, style, view);
+                change.committed =
+                    self.pencil_input(ui, &response, authored, selection, style, view);
             } else if tool == Tool::Text {
                 if response.hovered() {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
@@ -562,17 +613,18 @@ impl Canvas {
                     if let Some(pos) = pointer.filter(|p| response.interact_rect.contains(*p)) {
                         if self.point_text.is_none() {
                             self.note(Action::EditText);
-                            self.start_text(doc, frame, view.world(pos), selection, style);
+                            self.start_text(authored, frame, view.world(pos), selection, style);
                         }
                     }
                 }
             } else {
-                change = self.interact(ui, &response, doc, frame, tool, selection, style, view);
+                change =
+                    self.interact(ui, &response, authored, frame, tool, selection, style, view);
             }
         }
         if editable && tool == Tool::Text {
             if let Some(session) = &mut self.point_text {
-                match session.show(ui, view, viewport, doc, frame) {
+                match session.show(ui, view, viewport, authored, frame) {
                     point_text::Outcome::Editing => {
                         if let Some(caret) = session.take_caret_reveal() {
                             let inner = viewport.shrink(8.);
@@ -590,16 +642,17 @@ impl Canvas {
                     }
                     point_text::Outcome::Commit => {
                         // A layout error stays with the draft so the artist can correct it.
-                        change.committed |=
-                            self.finish_text(ui.ctx(), doc, selection).unwrap_or(false);
+                        change.committed |= self
+                            .finish_text(ui.ctx(), Arc::make_mut(authored), selection)
+                            .unwrap_or(false);
                     }
                 }
             }
         }
         let doc = authored.as_ref();
         let lettering = self.point_text.as_ref().and_then(|s| s.preview().cloned());
-        let drawing = lettering.as_deref().unwrap_or(doc);
-        let scene = change.preview.as_deref().unwrap_or(drawing);
+        let drawing = lettering.as_ref().unwrap_or(authored);
+        let scene = change.preview.as_deref().unwrap_or(drawing.as_ref());
         let painter = ui.painter_at(viewport);
         painter.rect_filled(viewport, 0., Color32::from_rgb(27, 30, 35));
         let margins = painter.add(egui::Shape::Noop);
@@ -874,6 +927,16 @@ impl Canvas {
             self.asset_move
                 .paint(&painter, view, change.object_preview.as_deref());
         }
+        if let Some(group) = style.group_scope().group() {
+            overlay::editing_group(
+                &painter,
+                view,
+                scene,
+                frame,
+                group,
+                change.object_preview.as_deref(),
+            );
+        }
         if !editable || tool != Tool::Node {
             self.nodes.clear();
         }
@@ -1124,7 +1187,7 @@ impl Canvas {
         &mut self,
         ui: &egui::Ui,
         response: &egui::Response,
-        doc: &mut Document,
+        doc: &mut Arc<Document>,
         frame: u32,
         tool: Tool,
         selection: &mut Vec<u64>,
@@ -1132,6 +1195,7 @@ impl Canvas {
         view: View,
     ) -> Edit {
         let mut edit = Edit::default();
+        let staged_transform = self.staged_transform.take();
         let keys = ui.input(|i| {
             (
                 i.focused,
@@ -1141,6 +1205,7 @@ impl Canvas {
             )
         });
         let (focused, escape, enter, mods) = keys;
+        let scope = style.group_scope();
         if !focused || escape {
             self.cancel_drag();
             if escape {
@@ -1154,7 +1219,9 @@ impl Canvas {
             && !matches!(self.gesture, Some(Gesture::Pen(drag)) if self.continuation.is_some() || drag.is_closing())
             && (self.continuation.is_some() || is_editable(doc, style.layer))
         {
-            if let Some(id) = self.finish_pen_draft(doc, frame, selection, style, None) {
+            if let Some(id) =
+                self.finish_pen_draft(Arc::make_mut(doc), frame, selection, style, None)
+            {
                 *selection = vec![id];
                 edit.committed = true;
             } else if response.secondary_clicked() {
@@ -1177,7 +1244,7 @@ impl Canvas {
         if self.editing_pivot.is_some() && response.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
         }
-        let primary_press = if press && matches!(tool, Tool::Pen | Tool::Node) {
+        let primary_press = if press && matches!(tool, Tool::Select | Tool::Pen | Tool::Node) {
             ui.input(|i| primary_button(i, true))
         } else {
             None
@@ -1189,6 +1256,11 @@ impl Canvas {
                     && ui.ctx().layer_id_at(pos) == Some(response.layer_id)
             });
         if press && (response.contains_pointer() || pen_press_on_canvas) {
+            let press_mods = primary_press.map_or(mods, |(_, modifiers)| modifiers);
+            self.direct_click = tool == Tool::Select
+                && (press_mods.ctrl || press_mods.command)
+                && !press_mods.alt
+                && !press_mods.shift;
             self.asset_move.begin_gesture();
             self.note(match tool {
                 Tool::Select if self.editing_pivot.is_some() => Action::Transform,
@@ -1245,9 +1317,15 @@ impl Canvas {
                             gradient::begin(doc, frame, world, selection, view.scale, style)
                         }
                         Tool::Text | Tool::Eyedropper | Tool::Pencil => None,
-                        Tool::Select => {
-                            self.select(doc, frame, world, selection, mods.shift, view.scale)
-                        }
+                        Tool::Select => self.select(
+                            doc,
+                            frame,
+                            world,
+                            selection,
+                            press_mods.shift,
+                            view.scale,
+                            scope,
+                        ),
                         Tool::Node => {
                             let (gesture, changed) = self.start_node(
                                 ui.ctx(),
@@ -1258,6 +1336,7 @@ impl Canvas {
                                 primary_press.map_or(mods, |(_, modifiers)| modifiers),
                                 view.scale,
                                 style.key_mode,
+                                scope,
                             );
                             edit.committed = changed;
                             gesture
@@ -1302,17 +1381,47 @@ impl Canvas {
         } else {
             pointer
         };
+        if release
+            && std::mem::take(&mut self.direct_click)
+            && response.clicked_by(egui::PointerButton::Primary)
+        {
+            if let Some(id) =
+                pointer.and_then(|p| doc.hit_test_in(view.world(p).into(), frame, scope))
+            {
+                *selection = vec![id];
+                self.direct_selection = Some(id);
+                self.gesture = None;
+                return edit;
+            }
+        }
         match &mut self.gesture {
             Some(Gesture::Node { start, edit, .. }) => edit.track_start(ui, view, *start, press),
             Some(Gesture::Pen(drag)) => drag.track_start(ui, view, press),
             _ => {}
         }
         if let (Some(Gesture::NodeMarquee { .. }), Some(pointer)) = (&self.gesture, pointer) {
-            self.update_node_marquee(ui.ctx(), doc, frame, view, pointer, release, selection);
+            self.update_node_marquee(
+                ui.ctx(),
+                doc,
+                frame,
+                view,
+                pointer,
+                release,
+                selection,
+                scope,
+            );
         }
         if tool == Tool::Node && ui.input(|i| i.pointer.any_released()) {
-            edit.committed |=
-                self.node_click(response, doc, frame, view, selection, mods, style.key_mode);
+            edit.committed |= self.node_click(
+                response,
+                doc,
+                frame,
+                view,
+                selection,
+                mods,
+                style.key_mode,
+                scope,
+            );
         }
         let (Some(gesture), Some(pointer)) = (&self.gesture, pointer) else {
             if !down {
@@ -1345,8 +1454,8 @@ impl Canvas {
                 edit.pivot = Some(hit.point);
                 if release {
                     if let Some(index) = pivot::target(doc, selection, frame) {
-                        let object = &mut doc.objects[index];
-                        if object.id == *id {
+                        if doc.objects[index].id == *id {
+                            let object = &mut Arc::make_mut(doc).objects[index];
                             edit.committed = object.set_pivot_at(frame, hit.point.into());
                         }
                     }
@@ -1373,9 +1482,13 @@ impl Canvas {
                 );
                 let node = drag.update(point, hit.point, view.scale, end_mods.shift);
                 if drag.is_closing() {
-                    if let Some(id) =
-                        self.finish_pen_draft(doc, frame, selection, style, Some(node))
-                    {
+                    if let Some(id) = self.finish_pen_draft(
+                        Arc::make_mut(doc),
+                        frame,
+                        selection,
+                        style,
+                        Some(node),
+                    ) {
                         *selection = vec![id];
                         edit.committed = true;
                     }
@@ -1391,13 +1504,14 @@ impl Canvas {
                     let region = [rect.left(), rect.top(), rect.right(), rect.bottom()];
                     let mut ids = previous.clone();
                     for o in &doc.objects {
-                        if document_core::arrange::is_object_editable(doc, o)
+                        if scope.contains(o)
+                            && document_core::arrange::is_object_editable(doc, o)
                             && o.bounds_within(region, frame)
                         {
                             ids.push(o.id);
                         }
                     }
-                    *selection = editable_selection(doc, &ids);
+                    *selection = scope.resolve(doc, &ids);
                 }
             }
             _ if gesture.has_dragged(point, view.scale)
@@ -1458,7 +1572,25 @@ impl Canvas {
                     let asset = gesture
                         .placement_transform()
                         .filter(|&id| self.asset_move.can_release(doc, frame, id));
-                    let (changed, new_id) = gesture.apply(doc, frame, target, style, mods);
+                    let staged = staged_transform.filter(|staged| {
+                        !press
+                            && tool == Tool::Select
+                            && gesture.single_transform().is_some()
+                            && staged.frame == frame
+                            && staged.target == target
+                            && staged.mods == mods
+                            && staged.key_mode == style.key_mode
+                            && staged.original.as_ptr() == Arc::as_ptr(doc)
+                    });
+                    let (changed, new_id) =
+                        if let Some(staged) = staged.and_then(|staged| staged.preview.upgrade()) {
+                            // The cached full preview already contains the result of
+                            // this exact gesture, including authored animation keys.
+                            *doc = staged;
+                            (true, None)
+                        } else {
+                            gesture.apply(Arc::make_mut(doc), frame, target, style, mods)
+                        };
                     edit.committed |= changed;
                     edit.selection_commit = selection_commit && changed;
                     edit.asset_commit = asset;
@@ -1534,9 +1666,20 @@ impl Canvas {
                     }
                     let mut preview = gesture
                         .reuse_preview(doc, self.previous_drag_document.take())
-                        .unwrap_or_else(|| doc.clone());
+                        .unwrap_or_else(|| doc.as_ref().clone());
                     if gesture.apply(&mut preview, frame, target, style, mods).0 {
-                        edit.preview = Some(std::sync::Arc::new(preview));
+                        let preview = Arc::new(preview);
+                        if tool == Tool::Select && gesture.single_transform().is_some() {
+                            self.staged_transform = Some(StagedTransform {
+                                original: Arc::downgrade(doc),
+                                preview: Arc::downgrade(&preview),
+                                frame,
+                                target,
+                                mods,
+                                key_mode: style.key_mode,
+                            });
+                        }
+                        edit.preview = Some(preview);
                     }
                 }
             }
@@ -1551,17 +1694,18 @@ impl Canvas {
 
     #[allow(clippy::too_many_arguments)]
     fn select(
-        &self,
+        &mut self,
         doc: &Document,
         frame: u32,
         point: Pos2,
         selection: &mut Vec<u64>,
         shift: bool,
         scale: f32,
+        scope: SelectionScope,
     ) -> Option<Gesture> {
         let within = |p: Pos2| p.distance(point) * scale <= gesture::HANDLE_HIT;
         if selection.len() > 1 {
-            let ids = GestureIds::new(editable_selection(doc, selection));
+            let ids = GestureIds::new(selection.clone());
             if let Some(bounds) = group_bounds(doc, frame, &ids) {
                 let rotate = bounds.center_top() - egui::vec2(0., 18. / scale);
                 if within(rotate) {
@@ -1589,20 +1733,29 @@ impl Canvas {
         {
             return Some(handle);
         }
-        if let Some(id) = doc.hit_test(point.into(), frame) {
-            let members = editable_selection(doc, &[id]);
+        let was_direct = self
+            .direct_selection
+            .take()
+            .is_some_and(|id| selection.as_slice() == [id]);
+        if was_direct && shift {
+            *selection = scope.resolve(doc, selection);
+        }
+        if let Some(id) = doc.hit_test_in(point.into(), frame, scope) {
+            let members = scope.resolve(doc, &[id]);
             if selection.contains(&id) {
                 if shift {
                     let members = GestureIds::new(members);
                     selection.retain(|id| !members.contains(*id));
                     return None;
+                } else if was_direct {
+                    *selection = members;
                 }
             } else if shift {
                 selection.extend(members);
             } else {
                 *selection = members;
             }
-            let ids = GestureIds::new(editable_selection(doc, selection));
+            let ids = GestureIds::new(scope.resolve(doc, selection));
             let object = doc.objects.iter().find(|o| o.id == id)?;
             return Some(Gesture::Move {
                 start: point,
@@ -1624,13 +1777,14 @@ impl Canvas {
     fn start_node(
         &mut self,
         ctx: &egui::Context,
-        doc: &mut Document,
+        doc: &mut Arc<Document>,
         frame: u32,
         point: Pos2,
         selection: &mut Vec<u64>,
         mods: egui::Modifiers,
         scale: f32,
         key_mode: crate::timeline::KeyMode,
+        scope: SelectionScope,
     ) -> (Option<Gesture>, bool) {
         let radius = 7. / scale;
         let target = doc
@@ -1648,13 +1802,13 @@ impl Canvas {
                     .map(|hit| (i, hit))
             });
         if let Some((i, (index, part, grip))) = target {
-            let object = &mut doc.objects[i];
+            let object = &doc.objects[i];
             let id = object.id;
             *selection = vec![id];
             if mods.alt && part == paths::Part::Anchor {
                 let changed = crate::path_editor::delete_node_at(
                     ctx,
-                    object,
+                    &mut Arc::make_mut(doc).objects[i],
                     frame,
                     key_mode,
                     index.contour,
@@ -1774,7 +1928,10 @@ impl Canvas {
                 );
             }
         }
-        *selection = doc.hit_test(point.into(), frame).into_iter().collect();
+        *selection = doc
+            .hit_test_in(point.into(), frame, scope)
+            .into_iter()
+            .collect();
         (None, false)
     }
 }
@@ -1801,4 +1958,13 @@ struct Edit {
     object_preview: Option<Box<document_core::VectorObject>>,
     object_commit: Option<u64>,
     snap: Option<snapping::Hit>,
+}
+
+struct StagedTransform {
+    original: Weak<Document>,
+    preview: Weak<Document>,
+    frame: u32,
+    target: Pos2,
+    mods: egui::Modifiers,
+    key_mode: crate::timeline::KeyMode,
 }

@@ -140,6 +140,9 @@ fn merge_layers(
         if previous.locked != layer.locked {
             target.locked = layer.locked;
         }
+        if previous.blend_mode != layer.blend_mode {
+            target.blend_mode = layer.blend_mode;
+        }
         true
     });
     for &layer in added {

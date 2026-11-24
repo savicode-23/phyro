@@ -1,5 +1,5 @@
 use super::{commands, Arrange, CanvasStyle};
-use document_core::{Clip, Document, KeyValue, Property, Shape};
+use document_core::{arrange::SelectionScope, Clip, Document, KeyValue, Property, Shape};
 use eframe::egui::{self, pos2, vec2, Color32, Id, Pos2, Rect, Response, Sense, Stroke, Ui};
 use std::{
     collections::{HashMap, HashSet},
@@ -189,10 +189,10 @@ pub(crate) fn layers(
 ) {
     let pending_id = rename_id(clip);
     let exposure = clip.exposure(frame).0;
-    let doc = clip.drawing_at_mut(frame);
     let id = ui.make_persistent_id("layer-tree");
-    let mut state: State = ui.data(|d| d.get_temp(id)).unwrap_or_default();
-    let can_move = commands::retain_editable_selection(doc, selected, style.layer);
+    let mut state: State = ui.data_mut(|d| d.remove_temp(id)).unwrap_or_default();
+    let can_move =
+        commands::retain_editable_selection(clip.drawing_at(frame), selected, style.layer);
     let selection = selected.last().map(|&id| (id, selected.len()));
     let reveal = selection != state.last_selection;
     if reveal {
@@ -210,7 +210,9 @@ pub(crate) fn layers(
             if add.on_hover_text("Add layer").clicked() {
                 add_layer = true;
             }
-            ui.menu_button("…", |ui| layer_menu(ui, doc, selected, style, can_move));
+            ui.menu_button("…", |ui| {
+                layer_menu(ui, clip, selected, frame, style, can_move);
+            });
         });
     });
     if add_layer {
@@ -220,7 +222,7 @@ pub(crate) fn layers(
         state.layer_focus = Some(style.layer);
         selected.clear();
     }
-    let doc = clip.drawing_at_mut(frame);
+    let doc = clip.drawing_at(frame);
     ui.separator();
     let key = id.with("hierarchy");
     let cached = ui.data(|d| d.get_temp::<Arc<Tree>>(key));
@@ -240,7 +242,7 @@ pub(crate) fn layers(
     if let Some(edit) = &mut rename {
         edit.rect = None;
     }
-    let height = (ui.available_height() - 38.).max(32.);
+    let height = (ui.available_height() - 60.).max(32.);
     egui::ScrollArea::vertical()
         .id_salt("layer-tree-rows")
         .auto_shrink([false, false])
@@ -302,45 +304,52 @@ pub(crate) fn layers(
         if escape || leave || !ui.memory(|m| m.has_focus(edit.field)) {
             ui.memory_mut(|m| m.surrender_focus(edit.field));
             if !escape {
-                edit.apply(doc);
+                edit.apply(clip.drawing_at_mut(frame));
             }
         } else {
             ui.data_mut(|d| d.insert_temp(pending_id, Some(edit)));
         }
     }
     if let Some(click) = clicked {
-        activate(click, doc, &tree, &mut state, selected, frame, style);
+        activate(click, clip, &tree, &mut state, selected, frame, style);
         // The rows have already painted the previous state on the release frame.
         ui.ctx().request_repaint();
     }
     ui.separator();
     footer(
         ui,
-        doc,
+        clip,
         selected,
         frame,
         style.layer,
         state.layer_focus == Some(style.layer),
+        style.group_scope(),
     );
     ui.data_mut(|d| d.insert_temp(id, state));
 }
 
 fn layer_menu(
     ui: &mut Ui,
-    doc: &mut Document,
+    clip: &mut Clip,
     selected: &mut Vec<u64>,
+    frame: u32,
     style: &mut CanvasStyle,
     can_move: bool,
 ) {
+    let doc = clip.drawing_at(frame);
     let Some(i) = doc.layers.iter().position(|l| l.id == style.layer) else {
         return;
     };
     ui.menu_button("Rename layer…", |ui| {
-        ui.add(
-            egui::TextEdit::singleline(&mut doc.layers[i].name)
+        let mut name = clip.drawing_at(frame).layers[i].name.clone();
+        let response = ui.add(
+            egui::TextEdit::singleline(&mut name)
                 .desired_width(140.)
                 .hint_text("Layer name"),
         );
+        if response.changed() {
+            clip.drawing_at_mut(frame).layers[i].name = name;
+        }
         if ui.button("Done").clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
             ui.close_menu();
         }
@@ -349,11 +358,13 @@ fn layer_menu(
         .add_enabled(can_move, egui::Button::new("Move selection here"))
         .clicked()
     {
-        commands::move_to_layer(doc, selected, style.layer);
+        commands::move_to_layer(clip.drawing_at_mut(frame), selected, style.layer);
         ui.close_menu();
     }
+    let doc = clip.drawing_at(frame);
     ui.add_enabled_ui(doc.layers.len() > 1 && !doc.layers[i].locked, |ui| {
         ui.menu_button("Delete layer…", |ui| {
+            let doc = clip.drawing_at(frame);
             let n = doc
                 .objects
                 .iter()
@@ -361,6 +372,7 @@ fn layer_menu(
                 .count();
             ui.label(format!("{} · {n} objects", doc.layers[i].name));
             if ui.button("Delete layer and contents").clicked() {
+                let doc = clip.drawing_at_mut(frame);
                 doc.objects.retain(|o| o.layer != style.layer);
                 doc.layers.remove(i);
                 style.layer = doc.layers[i.min(doc.layers.len() - 1)].id;
@@ -380,29 +392,34 @@ enum Action {
 
 fn activate(
     (row, action): (Row, Action),
-    doc: &mut Document,
+    clip: &mut Clip,
     tree: &Tree,
     state: &mut State,
     selected: &mut Vec<u64>,
     frame: u32,
     style: &mut CanvasStyle,
 ) {
+    let doc = clip.drawing_at(frame);
     if let Row::Layer(i) = row {
-        let l = &mut doc.layers[i];
+        let id = doc.layers[i].id;
         match action {
             Action::Select(_) => {
-                style.layer = l.id;
-                state.layer_focus = Some(l.id);
+                style.layer = id;
+                state.layer_focus = Some(id);
             }
             Action::Expand => {
-                state
-                    .layers
-                    .insert(l.id, !state.expanded(l.id, style.layer));
+                state.layers.insert(id, !state.expanded(id, style.layer));
             }
-            Action::Visibility => l.visible = !l.visible,
-            Action::Lock => l.locked = !l.locked,
+            Action::Visibility => {
+                let layer = &mut clip.drawing_at_mut(frame).layers[i];
+                layer.visible = !layer.visible;
+            }
+            Action::Lock => {
+                let layer = &mut clip.drawing_at_mut(frame).layers[i];
+                layer.locked = !layer.locked;
+            }
         }
-        commands::retain_editable_selection(doc, selected, style.layer);
+        commands::retain_editable_selection(clip.drawing_at(frame), selected, style.layer);
         return;
     }
     let (layer, slots): (_, &[_]) = match row {
@@ -421,22 +438,50 @@ fn activate(
         Action::Lock if commands::is_editable(doc, layer) => {
             let locked = slots.iter().any(|&i| doc.objects[i].locked);
             let id = doc.objects[slots[0]].id;
-            document_core::arrange::set_object_locks(doc, &[id], !locked);
+            let doc = clip.drawing_at_mut(frame);
+            if matches!(row, Row::Object(_))
+                && style
+                    .group_scope()
+                    .group()
+                    .is_some_and(|g| g.contains(&doc.objects[slots[0]]))
+            {
+                document_core::arrange::set_selected_locks(doc, &[id], !locked);
+            } else {
+                document_core::arrange::set_object_locks(doc, &[id], !locked);
+            }
             commands::retain_editable_selection(doc, selected, style.layer);
         }
         Action::Select(toggle)
-            if document_core::arrange::is_object_editable(doc, &doc.objects[slots[0]]) =>
+            if commands::is_editable(doc, layer)
+                && slots.iter().any(|&i| !doc.objects[i].locked) =>
         {
             state.layer_focus = None;
             style.layer = layer;
+            let scope = style.group_scope();
+            let inside = scope
+                .group()
+                .is_some_and(|g| g.contains(&doc.objects[slots[0]]));
+            if !inside && style.group_edit.take().is_some() {
+                selected.clear();
+            }
             let group = doc.objects[slots[0]].group;
-            let slots = group
-                .and_then(|g| tree.members.get(&(layer, g)))
-                .map_or(slots, Vec::as_slice);
-            let ids: Vec<_> = slots.iter().rev().map(|&i| doc.objects[i].id).collect();
+            let slots = if inside {
+                slots
+            } else {
+                group
+                    .and_then(|g| tree.members.get(&(layer, g)))
+                    .map_or(slots, Vec::as_slice)
+            };
+            let ids: Vec<_> = slots
+                .iter()
+                .rev()
+                .filter(|&&i| !doc.objects[i].locked)
+                .map(|&i| doc.objects[i].id)
+                .collect();
+            let Some(first) = ids.first() else { return };
             if !toggle {
                 *selected = ids;
-            } else if selected.contains(&ids[0]) {
+            } else if selected.contains(first) {
                 let remove: HashSet<_> = ids.into_iter().collect();
                 selected.retain(|id| !remove.contains(id));
             } else {
@@ -445,19 +490,22 @@ fn activate(
             }
         }
         Action::Visibility
-            if document_core::arrange::is_object_editable(doc, &doc.objects[slots[0]]) =>
+            if commands::is_editable(doc, layer)
+                && slots.iter().any(|&i| !doc.objects[i].locked) =>
         {
-            let show = !slots.iter().any(|&i| doc.objects[i].visible_at(frame));
+            let show = !slots.iter().any(|&i| {
+                let object = &doc.objects[i];
+                !object.locked && object.visible_at(frame)
+            });
+            let doc = clip.drawing_at_mut(frame);
             for &slot in slots {
-                if doc.objects[slot].visible_at(frame) == show {
+                let object = &mut doc.objects[slot];
+                if object.locked || object.visible_at(frame) == show {
                     continue;
                 }
-                style.key_mode.set(
-                    &mut doc.objects[slot],
-                    frame,
-                    Property::Visibility,
-                    KeyValue::Visible(show),
-                );
+                style
+                    .key_mode
+                    .set(object, frame, Property::Visibility, KeyValue::Visible(show));
             }
         }
         _ => {}
@@ -474,6 +522,13 @@ struct Rows<'a> {
     active: u64,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Locks {
+    Unlocked,
+    Mixed,
+    Locked,
+}
+
 impl Rows<'_> {
     fn row(
         &self,
@@ -482,7 +537,7 @@ impl Rows<'_> {
         row: Row,
         rename: &mut Option<Rename>,
     ) -> Option<Action> {
-        let (layer, name, icon, depth, expanded, selected, visible) = match row {
+        let (layer, name, icon, depth, expanded, selected, visible, locks) = match row {
             Row::Layer(i) => {
                 let l = &self.doc.layers[i];
                 (
@@ -498,13 +553,25 @@ impl Rows<'_> {
                     l.id == self.active
                         && (self.selected.is_empty() || self.state.layer_focus == Some(l.id)),
                     l.visible,
+                    Locks::Unlocked,
                 )
             }
             Row::Group(key) => {
                 let members = &self.tree.members[&key];
-                let chosen = members
-                    .iter()
-                    .all(|&i| self.selected.contains(&self.doc.objects[i].id));
+                let mut unlocked = 0;
+                let mut chosen = 0;
+                let mut locked_visible = false;
+                let mut unlocked_visible = false;
+                for &index in members {
+                    let member = &self.doc.objects[index];
+                    if member.locked {
+                        locked_visible = locked_visible || member.visible_at(self.frame);
+                    } else {
+                        unlocked += 1;
+                        chosen += usize::from(self.selected.contains(&member.id));
+                        unlocked_visible = unlocked_visible || member.visible_at(self.frame);
+                    }
+                }
                 (
                     key.0,
                     self.doc.objects[members[0]]
@@ -514,10 +581,19 @@ impl Rows<'_> {
                     Icon::Group,
                     1,
                     Some(self.state.groups.contains(&key)),
-                    chosen,
-                    members
-                        .iter()
-                        .any(|&i| self.doc.objects[i].visible_at(self.frame)),
+                    unlocked > 0 && chosen == unlocked,
+                    if unlocked == 0 {
+                        locked_visible
+                    } else {
+                        unlocked_visible
+                    },
+                    if unlocked == 0 {
+                        Locks::Locked
+                    } else if unlocked == members.len() {
+                        Locks::Unlocked
+                    } else {
+                        Locks::Mixed
+                    },
                 )
             }
             Row::Object(i) => {
@@ -543,19 +619,17 @@ impl Rows<'_> {
                     None,
                     self.selected.contains(&o.id),
                     o.visible_at(self.frame),
+                    if o.locked {
+                        Locks::Locked
+                    } else {
+                        Locks::Unlocked
+                    },
                 )
             }
         };
         let l = self.doc.layers.iter().find(|l| l.id == layer)?;
         let is_layer = matches!(row, Row::Layer(_));
-        let object_locked = match row {
-            Row::Layer(_) => false,
-            Row::Group(key) => self.tree.members[&key]
-                .iter()
-                .any(|&i| self.doc.objects[i].locked),
-            Row::Object(i) => self.doc.objects[i].locked,
-        };
-        let editable = l.visible && !l.locked && !object_locked;
+        let editable = l.visible && !l.locked && locks != Locks::Locked;
         let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::hover());
         let cy = rect.center().y;
         let chip = |x: f32| Rect::from_center_size(pos2(x, cy), vec2(20., ROW));
@@ -653,11 +727,11 @@ impl Rows<'_> {
             ui,
             lock_rect,
             key.with("lock"),
-            Icon::Lock(l.locked || object_locked),
+            Icon::Lock(l.locked || locks != Locks::Unlocked),
             is_layer || l.visible && !l.locked,
             if !is_layer && l.locked {
                 "Locked by layer"
-            } else if l.locked || object_locked {
+            } else if l.locked || locks != Locks::Unlocked {
                 "Unlock"
             } else {
                 "Lock"
@@ -667,7 +741,7 @@ impl Rows<'_> {
         if lock.clicked() {
             return Some(Action::Lock);
         }
-        if !is_layer && editable {
+        if !is_layer && editable && locks == Locks::Unlocked {
             let begin = rename_click(ui, &label, tree_id);
             if begin {
                 let (target, stored_name) = match row {
@@ -921,19 +995,38 @@ fn draw_icon(ui: &Ui, c: Pos2, icon: Icon, color: Color32) {
 
 fn footer(
     ui: &mut Ui,
-    doc: &mut Document,
+    clip: &mut Clip,
     selected: &mut Vec<u64>,
     frame: u32,
     layer: u64,
     layer_focus: bool,
+    scope: SelectionScope,
 ) {
+    if let Some((index, active)) = clip
+        .drawing_at(frame)
+        .layers
+        .iter()
+        .enumerate()
+        .find(|(_, l)| l.id == layer)
+    {
+        let choice = ui
+            .add_enabled_ui(!active.locked, |ui| {
+                super::blending::combo(ui, "Layer blend", active.blend_mode, false)
+            })
+            .inner;
+        if let Some(mode) = choice {
+            clip.drawing_at_mut(frame).layers[index].blend_mode = mode;
+        }
+    }
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 3.;
         let layer_only = selected.is_empty() || layer_focus;
+        let doc = clip.drawing_at(frame);
         let at = doc.layers.iter().position(|l| l.id == layer);
+        let layer_count = doc.layers.len();
         for (up, order) in [(true, Arrange::Forward), (false, Arrange::Backward)] {
-            let available = !layer_only
-                || at.is_some_and(|i| if up { i + 1 < doc.layers.len() } else { i > 0 });
+            let available =
+                !layer_only || at.is_some_and(|i| if up { i + 1 < layer_count } else { i > 0 });
             let tip = match (layer_only, up) {
                 (true, true) => "Raise layer",
                 (true, false) => "Lower layer",
@@ -960,32 +1053,33 @@ fn footer(
                 stroke,
             ));
             if button.on_hover_text(tip).clicked() {
+                let doc = clip.drawing_at_mut(frame);
                 if layer_only {
                     if let Some(i) = at {
                         doc.layers.swap(i, if up { i + 1 } else { i - 1 });
                     }
                 } else {
-                    commands::arrange(doc, selected, frame, order);
+                    commands::arrange_in(doc, selected, frame, order, scope);
                 }
             }
         }
         ui.separator();
-        let options = if layer_only {
+        let options = if layer_only || scope != SelectionScope::Groups {
             commands::GroupingOptions::default()
         } else {
-            commands::grouping_options(doc, selected)
+            commands::grouping_options(clip.drawing_at(frame), selected)
         };
         if ui
             .add_enabled(options.can_group, egui::Button::new("Group"))
             .clicked()
         {
-            commands::GroupAction::Group.apply(doc, selected);
+            commands::GroupAction::Group.apply(clip.drawing_at_mut(frame), selected);
         }
         if ui
             .add_enabled(options.can_ungroup, egui::Button::new("Ungroup"))
             .clicked()
         {
-            commands::GroupAction::Ungroup.apply(doc, selected);
+            commands::GroupAction::Ungroup.apply(clip.drawing_at_mut(frame), selected);
         }
     });
 }

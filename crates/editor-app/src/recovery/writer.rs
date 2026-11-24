@@ -18,6 +18,8 @@ pub(crate) struct Writer {
 struct Shared {
     root: PathBuf,
     state: Mutex<State>,
+    // Reading an error never waits for the filesystem work under the state lock.
+    notice: Mutex<Option<String>>,
     wake: Condvar,
     #[cfg(test)]
     pause_publication: Mutex<Option<PublicationPause>>,
@@ -38,7 +40,6 @@ struct State {
     closed: bool,
     retry: Option<Instant>,
     failures: u32,
-    notice: Option<String>,
 }
 
 struct Request {
@@ -52,6 +53,7 @@ impl Writer {
             shared: Arc::new(Shared {
                 root,
                 state: Mutex::default(),
+                notice: Mutex::default(),
                 wake: Condvar::new(),
                 #[cfg(test)]
                 pause_publication: Mutex::default(),
@@ -60,16 +62,26 @@ impl Writer {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn checkpoint(
         &mut self,
         source: Option<PathBuf>,
         project: AnimationProject,
     ) -> io::Result<()> {
+        self.checkpoint_notifying(source, project, || {})
+    }
+
+    pub(crate) fn checkpoint_notifying(
+        &mut self,
+        source: Option<PathBuf>,
+        project: AnimationProject,
+        notify_failure: impl Fn() + Send + 'static,
+    ) -> io::Result<()> {
         if !self.started {
             let shared = self.shared.clone();
             thread::Builder::new()
                 .name("recovery writer".into())
-                .spawn(move || shared.run())?;
+                .spawn(move || shared.run(notify_failure))?;
             self.started = true;
         }
         self.shared.state.lock().unwrap().pending = Some(Request { source, project });
@@ -86,7 +98,7 @@ impl Writer {
             state.pending = None;
             state.retry = None;
             state.failures = 0;
-            state.notice = None;
+            *self.shared.notice.lock().unwrap() = None;
             state.active.take()
         };
         self.shared.wake.notify_all();
@@ -100,7 +112,7 @@ impl Writer {
     }
 
     pub(crate) fn take_error(&self) -> Option<String> {
-        self.shared.state.try_lock().ok()?.notice.take()
+        self.shared.notice.lock().unwrap().take()
     }
 
     #[cfg(test)]
@@ -131,7 +143,12 @@ impl Writer {
             .unwrap();
         if state.retry.is_some() {
             Err(io::Error::other(
-                state.notice.as_deref().unwrap_or("Checkpoint failed"),
+                self.shared
+                    .notice
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .unwrap_or_else(|| "Checkpoint failed".into()),
             ))
         } else if timeout.timed_out() {
             Err(io::Error::new(
@@ -157,7 +174,7 @@ impl Drop for Writer {
 }
 
 impl Shared {
-    fn run(&self) {
+    fn run(&self, notify_failure: impl Fn()) {
         loop {
             let (generation, request) = {
                 let mut state = self.state.lock().unwrap();
@@ -181,17 +198,18 @@ impl Shared {
             let result = self.write(generation, &request);
             let mut state = self.state.lock().unwrap();
             state.busy = false;
+            let mut new_failure = false;
             if !state.closed && state.generation == generation {
                 match result {
                     Ok(()) => {
                         state.failures = 0;
                         state.retry = None;
-                        state.notice = None;
                     }
                     Err(error) => {
                         if state.failures == 0 {
-                            state.notice =
+                            *self.notice.lock().unwrap() =
                                 Some(format!("Could not checkpoint the recovery draft. {error}"));
+                            new_failure = true;
                         }
                         state.failures = state.failures.saturating_add(1);
                         let seconds = 1 << state.failures.min(6);
@@ -201,6 +219,10 @@ impl Shared {
                 }
             }
             self.wake.notify_all();
+            drop(state);
+            if new_failure {
+                notify_failure();
+            }
         }
     }
 

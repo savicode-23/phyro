@@ -72,6 +72,7 @@ impl List {
             scroll: egui::Id::NULL,
             width: 256.,
             style: CanvasStyle {
+                group_edit: None,
                 fill: [0; 4],
                 gradient: None,
                 stroke_gradient: None,
@@ -93,6 +94,14 @@ impl List {
         self.clip.drawing_at(0)
     }
     fn frame(&mut self, events: Vec<Event>, modifiers: Modifiers) -> egui::FullOutput {
+        self.frame_at(0, events, modifiers)
+    }
+    fn frame_at(
+        &mut self,
+        frame: u32,
+        events: Vec<Event>,
+        modifiers: Modifiers,
+    ) -> egui::FullOutput {
         self.ctx.run(
             egui::RawInput {
                 screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(self.width, 410.))),
@@ -104,7 +113,13 @@ impl List {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     self.root = ui.make_persistent_id("layer-tree");
                     self.scroll = ui.make_persistent_id(egui::Id::new("layer-tree-rows"));
-                    layers(ui, &mut self.clip, &mut self.selected, 0, &mut self.style);
+                    layers(
+                        ui,
+                        &mut self.clip,
+                        &mut self.selected,
+                        frame,
+                        &mut self.style,
+                    );
                 });
             },
         )
@@ -129,6 +144,46 @@ impl List {
                 mods,
             );
         }
+    }
+}
+
+#[test]
+fn inspecting_selecting_and_expanding_layers_keep_shared_drawings() {
+    let mut w = List::new();
+    w.clip.duplicate_layer_frame(2, 1).unwrap();
+    w.clip.duplicate_layer_frame(4, 1).unwrap();
+    let snapshot = w.clip.cels[&0].clone();
+    for tick in [0, 2, 4, 0] {
+        w.frame_at(tick, vec![], Modifiers::NONE);
+        assert!(std::sync::Arc::ptr_eq(&snapshot, &w.clip.cels[&tick]));
+    }
+
+    let group = w.root.with(("group", (1u64, 3u64)));
+    w.click(group, Modifiers::NONE);
+    w.click(group.with("expand"), Modifiers::NONE);
+    assert_eq!(w.selected.len(), 2);
+    assert!(std::sync::Arc::ptr_eq(&snapshot, &w.clip.cels[&0]));
+    w.click(group.with("eye"), Modifiers::NONE);
+    assert!(!w.doc().objects[0].visible_at(0));
+    assert!(snapshot.objects[0].visible_at(0));
+}
+
+#[test]
+fn partially_locked_groups_select_and_toggle_only_unlocked_members_in_either_order() {
+    for locked in [0, 9999] {
+        let mut w = List::new();
+        let unlocked = 9999 - locked;
+        w.clip.drawing_at_mut(0).objects[locked].locked = true;
+        w.frame(vec![], Modifiers::NONE);
+        let group = w.root.with(("group", (1u64, 3u64)));
+        w.click(group, Modifiers::NONE);
+        assert_eq!(w.selected, [w.doc().objects[unlocked].id]);
+        w.click(group.with("eye"), Modifiers::NONE);
+        assert!(!w.doc().objects[unlocked].visible_at(0));
+        assert!(w.doc().objects[locked].visible_at(0));
+        w.click(group.with("eye"), Modifiers::NONE);
+        assert!(w.doc().objects[unlocked].visible_at(0));
+        assert!(w.doc().objects[locked].visible_at(0));
     }
 }
 

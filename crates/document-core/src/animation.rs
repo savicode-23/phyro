@@ -566,6 +566,7 @@ impl Clip {
             .cels
             .get(&0)
             .ok_or("Each clip needs a drawing at its first frame.")?;
+        let mut validated = HashSet::new();
         for (&start, scene) in &self.cels {
             if start >= self.frames
                 || scene.frames != self.frames
@@ -578,7 +579,9 @@ impl Clip {
                     self.name
                 ));
             }
-            scene.validate()?;
+            if validated.insert(Arc::as_ptr(scene)) {
+                scene.validate()?;
+            }
         }
         Ok(())
     }
@@ -624,10 +627,11 @@ impl Clip {
             return Err(format!("Use 1–{MAX_FPS} fps."));
         }
         if self.fps != fps {
+            update_shared_drawings(self.cels.values_mut(), |doc| {
+                doc.fps = fps;
+                Ok(())
+            })?;
             self.fps = fps;
-            for doc in self.cels.values_mut() {
-                Arc::make_mut(doc).fps = fps;
-            }
         }
         Ok(())
     }
@@ -658,24 +662,13 @@ impl Clip {
             return Err("Shortening the clip would discard drawings, keys or events. Delete those frames explicitly.".into());
         }
         if frames != self.frames {
-            let mut resized = HashMap::new();
-            for doc in self.cels.values_mut() {
-                if doc.frames == frames {
-                    continue;
-                }
-                let source = Arc::as_ptr(doc);
-                if let Some(existing) = resized.get(&source) {
-                    *doc = Arc::clone(existing);
-                    continue;
-                }
-                // Multiple exposures may refer to this same immutable drawing.
-                // Resize it once, keeping older undo snapshots at their original length.
-                let shared = Arc::strong_count(doc) > 1;
-                Arc::make_mut(doc).frames = frames;
-                if shared {
-                    resized.insert(source, Arc::clone(doc));
-                }
-            }
+            update_shared_drawings(
+                self.cels.values_mut().filter(|doc| doc.frames != frames),
+                |doc| {
+                    doc.frames = frames;
+                    Ok(())
+                },
+            )?;
             self.frames = frames;
         }
         Ok(())
@@ -714,20 +707,29 @@ impl Clip {
             .map(|(&tick, layers)| (tick + count, layers.clone()))
             .collect();
         // Preserve exposure runs, including a range that starts partway into a hold.
-        let starts = std::iter::once(first).chain(self.cels.range(first + 1..at).map(|(&f, _)| f));
-        for start in starts {
-            let mut drawing = self.drawing_at(start).clone();
+        let initial = self
+            .cels
+            .range(..=first)
+            .next_back()
+            .expect("validated clip starts at zero")
+            .1;
+        copies.push((first + count, Arc::clone(initial)));
+        copies.extend(
+            self.cels
+                .range(first + 1..at)
+                .map(|(&tick, doc)| (tick + count, Arc::clone(doc))),
+        );
+        update_shared_drawings(copies.iter_mut().map(|(_, doc)| doc), |doc| {
             retime(
-                &mut drawing,
+                doc,
                 Edit::Copy {
                     first,
                     last,
                     offset: count,
                 },
                 self.frames + count,
-            )?;
-            copies.push((start + count, Arc::new(drawing)));
-        }
+            )
+        })?;
         let events: Vec<_> = self
             .events
             .range(first..=last)
@@ -795,13 +797,9 @@ impl Clip {
             return Err(format!("A clip can contain up to {MAX_FRAMES} frames."));
         }
         let mut cels = self.cels.clone();
-        for doc in cels.values_mut() {
-            retime(
-                Arc::make_mut(doc),
-                Edit::Insert { at, count },
-                self.frames + count,
-            )?;
-        }
+        update_shared_drawings(cels.values_mut(), |doc| {
+            retime(doc, Edit::Insert { at, count }, self.frames + count)
+        })?;
         let tail = self.events.split_off(&at);
         self.events
             .extend(tail.into_iter().map(|(tick, names)| (tick + count, names)));
@@ -818,6 +816,28 @@ impl Clip {
             .collect();
         Ok(())
     }
+}
+
+/// Apply a drawing-wide change once per shared snapshot. Each exposure still
+/// owns its boundary, and older snapshots retain the original drawing.
+fn update_shared_drawings<'a>(
+    drawings: impl Iterator<Item = &'a mut Arc<Document>>,
+    mut update: impl FnMut(&mut Document) -> Result<(), String>,
+) -> Result<(), String> {
+    let mut updated = HashMap::new();
+    for doc in drawings {
+        let source = Arc::as_ptr(doc);
+        if let Some(previous) = updated.get(&source) {
+            *doc = Arc::clone(previous);
+        } else {
+            let shared = Arc::strong_count(doc) > 1;
+            update(Arc::make_mut(doc))?;
+            if shared {
+                updated.insert(source, Arc::clone(doc));
+            }
+        }
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy)]
